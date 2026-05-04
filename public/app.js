@@ -1,6 +1,6 @@
 const config = window.TSN_STOCK_CONFIG || {};
 const API_BASE = String(config.apiBaseUrl || '').replace(/\/$/, '');
-const state = { stock: null, socket: null, lastFetchFailed: false };
+const state = { stock: null, lastFetchFailed: false };
 
 const $ = (selector) => document.querySelector(selector);
 
@@ -118,30 +118,28 @@ function renderStock(stock) {
   drawChart(stock);
 }
 
+async function fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function fetchStock() {
   if (!API_BASE) {
     setStatus('Mangler TSN URL', 'error');
     $('#setupHelp')?.classList.remove('hidden');
     return;
   }
-  const response = await fetch(`${API_BASE}/api/public/stock`, { cache: 'no-store' });
+  const response = await fetchWithTimeout(`${API_BASE}/api/public/stock`, { cache: 'no-store' }, 10000);
   if (!response.ok) throw new Error(`TSN API svarede ${response.status}`);
   const data = await response.json();
   renderStock(data.stock);
   setStatus('Live fra TSN', 'connected');
   state.lastFetchFailed = false;
-}
-
-function connectSocket() {
-  if (!API_BASE || typeof io !== 'function') return;
-  state.socket = io(API_BASE, { transports: ['websocket', 'polling'] });
-  state.socket.on('connect', () => setStatus('Live fra TSN', 'connected'));
-  state.socket.on('disconnect', () => setStatus('Genforbinder...', ''));
-  state.socket.on('connect_error', () => setStatus('Bruger polling/API', ''));
-  state.socket.on('tsn-stock-updated', (stock) => {
-    renderStock(stock);
-    setStatus('Live fra TSN', 'connected');
-  });
 }
 
 $('#refreshButton')?.addEventListener('click', () => fetchStock().catch((error) => {
@@ -157,5 +155,4 @@ fetchStock().catch((error) => {
   console.error(error);
   setStatus('Kan ikke forbinde', 'error');
 });
-connectSocket();
 setInterval(() => fetchStock().catch(() => setStatus('Venter på TSN', '')), 30000);

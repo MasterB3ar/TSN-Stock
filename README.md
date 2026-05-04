@@ -1,56 +1,69 @@
-# TSN Stock Standalone
+# TSN Stock Standalone — dependency-free Render fix
 
-This is a separate website for TSN Stock. It does **not** store its own TSN data. It reads activity data from the original TSN website.
+This is the standalone TSN Stock website. It reads activity data from your original TSN website.
 
-## Important
+This version has been rebuilt to fix Render builds getting stuck at `npm install` / npm audit.
+It uses **zero npm dependencies**. The server uses only Node.js built-in modules.
 
-Deploy the updated original TSN project first. It adds this public endpoint:
+## Original TSN requirement
+
+Your original TSN website must have this endpoint:
 
 ```txt
 /api/public/stock
 ```
 
-That endpoint returns only the fictional stock snapshot and activity metrics. It does not expose private message content, passwords, sessions, or user data.
-
-## Local setup
-
-```bash
-npm install
-cp .env.example .env
-npm run dev
-```
-
-Set this in `.env`:
+Example:
 
 ```txt
-TSN_API_BASE_URL=https://your-original-tsn-url.onrender.com
-```
-
-Then open:
-
-```txt
-http://localhost:3010
+https://your-normal-tsn.onrender.com/api/public/stock
 ```
 
 ## Render setup
 
-1. Create a new Web Service for this `tsn-stock-standalone` folder.
-2. Set build command:
+Use these settings for the TSN Stock Render service:
 
-```bash
-npm install
+```txt
+Build Command: npm run build
+Start Command: npm start
 ```
 
-3. Set start command:
+Environment variables:
+
+```txt
+TSN_API_BASE_URL=https://your-normal-tsn.onrender.com
+NODE_ENV=production
+NODE_VERSION=22.16.0
+NPM_CONFIG_AUDIT=false
+NPM_CONFIG_FUND=false
+```
+
+Important: `TSN_API_BASE_URL` must point to the normal/original TSN website, not the TSN Stock website.
+
+## If Render still runs `npm install`
+
+Go to Render → your TSN Stock service → Settings and manually change the Build Command to:
+
+```bash
+npm run build
+```
+
+Then click:
+
+```txt
+Manual Deploy → Clear build cache & deploy
+```
+
+## Local setup
 
 ```bash
 npm start
 ```
 
-4. Add environment variable:
+Open:
 
 ```txt
-TSN_API_BASE_URL=https://your-original-tsn-url.onrender.com
+http://localhost:3010
 ```
 
 ## What affects the price?

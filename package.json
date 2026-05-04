@@ -1,21 +1,16 @@
 {
   "name": "tsn-stock-standalone",
-  "version": "1.0.0",
-  "description": "Standalone TSN Stock website that reads live activity data from the original TSN website.",
+  "version": "1.0.1",
+  "description": "Dependency-free standalone TSN Stock website that reads live activity data from the original TSN website.",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch server.js"
+    "build": "node -e \"console.log('No build step needed for TSN Stock')\""
   },
   "keywords": ["tsn", "stock", "activity", "dashboard"],
   "author": "TSN",
   "license": "MIT",
-  "dependencies": {
-    "express": "^4.21.2",
-    "helmet": "^8.0.0",
-    "morgan": "^1.10.0"
-  },
   "engines": {
-    "node": ">=18.18.0 <25.0.0"
+    "node": "22.x"
   }
 }
