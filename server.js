@@ -30,6 +30,10 @@ const AUTO_REBASE_ENABLED = String(process.env.TSN_STOCK_AUTO_REBASE || 'true').
 const AUTO_REBASE_THRESHOLD_MULTIPLIER = Number(process.env.TSN_STOCK_AUTO_REBASE_THRESHOLD || 1.8);
 const ACTIVITY_SCORE_POINTS_MULTIPLIER = Number(process.env.TSN_STOCK_ACTIVITY_POINTS_MULTIPLIER || 1000);
 const ACTIVITY_SCORE_PRICE_SOFT_CAP = Number(process.env.TSN_STOCK_ACTIVITY_PRICE_SOFT_CAP || 8);
+const METRIC_MESSAGE_EPSILON = Number(process.env.TSN_STOCK_MESSAGE_EPSILON || 0.05);
+const METRIC_POST_EPSILON = Number(process.env.TSN_STOCK_POST_EPSILON || 0.05);
+const METRIC_ACTIVITY_EPSILON = Number(process.env.TSN_STOCK_ACTIVITY_EPSILON || 0.01);
+const MAX_PRICE_MOVE_PER_TICK = Number(process.env.TSN_STOCK_MAX_PRICE_MOVE_PER_TICK || 1.25);
 
 const PERSISTENCE_ENABLED = Boolean(MONGODB_URI);
 let mongoClient = null;
@@ -444,15 +448,24 @@ function metricDelta(current, previous) {
   const messageDelta = Number(current.messagesPerHour || 0) - Number(previous.messagesPerHour || 0);
   const postDelta = Number(current.postsPerHour || 0) - Number(previous.postsPerHour || 0);
   const activityDelta = Number(current.activityScore || 0) - Number(previous.activityScore || 0);
+
+  // Do not treat tiny rolling-rate noise as a real market event. This stops the
+  // chart from bouncing +4 / -4 when TSN activity is effectively unchanged.
+  const onlineChanged = Math.abs(onlineDelta) > 0.0001;
+  const messageChanged = Math.abs(messageDelta) >= Math.max(0, METRIC_MESSAGE_EPSILON);
+  const postChanged = Math.abs(postDelta) >= Math.max(0, METRIC_POST_EPSILON);
+  const activityChanged = Math.abs(activityDelta) >= Math.max(0, METRIC_ACTIVITY_EPSILON);
+
   return {
     onlineDelta,
     messageDelta,
     postDelta,
     activityDelta,
-    changed: Math.abs(onlineDelta) > 0.0001
-      || Math.abs(messageDelta) > 0.0001
-      || Math.abs(postDelta) > 0.0001
-      || Math.abs(activityDelta) > 0.0001
+    onlineChanged,
+    messageChanged,
+    postChanged,
+    activityChanged,
+    changed: onlineChanged || messageChanged || postChanged || activityChanged
   };
 }
 
@@ -470,6 +483,35 @@ function calculateStandalonePrice(sourceStock, history) {
   const previousMetrics = normalizeMetrics(lastPoint?.metrics || {});
   const metrics = normalizeMetrics(sourceStock?.metrics || {});
   const deltas = metricDelta(metrics, previousMetrics);
+
+  // If TSN activity has not really changed since the last saved snapshot, hold
+  // the price exactly still. This removes artificial oscillation like +4, -4,
+  // +4, -4 caused by target-pull/gravity recalculating on every poll.
+  if (lastPoint && !deltas.changed) {
+    const price = Number(previousPrice.toFixed(2));
+    return {
+      ...sourceStock,
+      price,
+      previousPrice: price,
+      change: 0,
+      changePercent: 0,
+      trend: 'flat',
+      updatedAt: new Date().toISOString(),
+      metrics: {
+        ...metrics,
+        priceMove: 0,
+        targetPrice: Number(price.toFixed(2)),
+        targetPull: 0,
+        baseGravity: 0,
+        bullishActivityBoost: 0,
+        activityMomentumBoost: 0,
+        metricDeltas: deltas,
+        changedSinceLastSnapshot: false,
+        heldBecauseMetricsUnchanged: true
+      },
+      pricingEngine: 'event-driven-flat-until-real-metric-change-v6'
+    };
+  }
 
   const activeUsers = metrics.onlineUsers > 0;
   const activeMessages = metrics.messagesPerHour > 0;
@@ -514,23 +556,29 @@ function calculateStandalonePrice(sourceStock, history) {
     rawMove *= 0.18;
   }
 
-  // Any new activity should create a visible green tick.
+  // Any real new activity should create a small green tick. If activity is merely
+  // stable, the early-return above holds the price at 0 change.
   if (activityIncreased && rawMove < 0.03) {
     rawMove = 0.03;
   }
 
-  // If there is strong current activity, keep the stock biased upward even if the previous
-  // snapshot had slightly higher activity. This makes active TSN sessions feel bullish.
-  if (hasStrongActivity && previousPrice < basePrice * 1.35 && rawMove < 0.012) {
-    rawMove = 0.012;
+  // With people still actively using TSN, avoid red ticks from formula gravity
+  // unless the measured activity actually dropped meaningfully.
+  const activityDropped = deltas.onlineDelta < -0.0001
+    || deltas.messageDelta <= -Math.max(1, METRIC_MESSAGE_EPSILON * 4)
+    || deltas.postDelta <= -Math.max(0.5, METRIC_POST_EPSILON * 4)
+    || deltas.activityDelta <= -Math.max(0.08, METRIC_ACTIVITY_EPSILON * 4);
+  if (hasAnyActivity && !activityDropped && rawMove < 0) {
+    rawMove = 0;
   }
 
-  // When activity is unchanged but still present, drift up slowly instead of going flat/down.
-  if (!deltas.changed && hasAnyActivity && previousPrice < basePrice * 1.30 && rawMove < 0.006) {
-    rawMove = 0.006;
-  }
+  const maxMove = Math.max(0.01, MAX_PRICE_MOVE_PER_TICK);
+  rawMove = clamp(rawMove, previousPrice > basePrice * 1.8 ? -maxMove : -maxMove, maxMove);
 
-  rawMove = clamp(rawMove, previousPrice > basePrice * 1.8 ? -45 : -8, 4.5);
+  // Tiny movements look like noise. Round them to flat so the UI shows 0 / 0.
+  if (Math.abs(rawMove) < 0.01) {
+    rawMove = 0;
+  }
 
   const price = Number(clamp(previousPrice + rawMove, 1, 99999).toFixed(2));
   const change = Number((price - previousPrice).toFixed(2));
@@ -557,7 +605,7 @@ function calculateStandalonePrice(sourceStock, history) {
       metricDeltas: deltas,
       changedSinceLastSnapshot: deltas.changed
     },
-    pricingEngine: 'bullish-instant-standalone-mongodb-history-v5-uncapped-activity'
+    pricingEngine: 'event-driven-flat-until-real-metric-change-v6'
   };
 }
 

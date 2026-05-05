@@ -48,6 +48,10 @@ Optional settings:
 ```env
 TSN_STOCK_ACTIVITY_POINTS_MULTIPLIER=1000
 TSN_STOCK_ACTIVITY_PRICE_SOFT_CAP=8
+TSN_STOCK_MESSAGE_EPSILON=0.05
+TSN_STOCK_POST_EPSILON=0.05
+TSN_STOCK_ACTIVITY_EPSILON=0.01
+TSN_STOCK_MAX_PRICE_MOVE_PER_TICK=1.25
 ```
 
 ## Render setup
@@ -91,6 +95,13 @@ MONGODB_TRADE_COLLECTION=tsnMoneyTrades
 `TSN_STOCK_MAX_HISTORY=720` means about 24 minutes of 2-second snapshots if activity constantly changes. Increase it if you want a longer chart, for example `TSN_STOCK_MAX_HISTORY=10800` for about 6 hours.
 
 `TSN_STOCK_TARGET_BASE_PRICE=100` keeps the stock centered around 100. If your old MongoDB history is already around 500, `TSN_STOCK_AUTO_REBASE=true` automatically scales the saved history down the first time the app runs after deployment.
+
+
+### Price stability fix
+
+This version uses event-driven price ticks. If online users, messages/hour, posts/hour, and activity score are effectively unchanged, the stock holds still and shows `0` movement instead of bouncing `+4 / -4 / +4 / -4`.
+
+The price still moves when TSN activity actually changes. The optional epsilon settings above control how small a rolling-rate change must be before it counts as a real stock event.
 
 ## Where to find `MONGODB_URI`
 
