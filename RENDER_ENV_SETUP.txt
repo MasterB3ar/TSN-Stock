@@ -1,46 +1,30 @@
-services:
-  - type: web
-    name: tsn-stock
-    env: node
-    plan: free
-    buildCommand: npm install --omit=dev --no-audit --no-fund
-    startCommand: npm start
-    envVars:
-      - key: NODE_ENV
-        value: production
-      - key: NODE_VERSION
-        value: 22.16.0
-      - key: NPM_CONFIG_AUDIT
-        value: "false"
-      - key: NPM_CONFIG_FUND
-        value: "false"
-      - key: TSN_API_BASE_URL
-        sync: false
-      - key: MONGODB_URI
-        sync: false
-      - key: MONGODB_DATABASE
-        value: tsn_stock
-      - key: MONGODB_COLLECTION
-        value: stockSnapshots
-      - key: TSN_STOCK_REFRESH_MS
-        value: "2000"
-      - key: TSN_STOCK_MAX_HISTORY
-        value: "302400"
-      - key: TSN_STOCK_RESET_KEY
-        sync: false
-      - key: TSN_STOCK_RESET_PRICE
-        value: "100"
-      - key: TSN_STOCK_TARGET_BASE_PRICE
-        value: "100"
-      - key: TSN_STOCK_AUTO_REBASE
-        value: "true"
-      - key: TSN_STOCK_AUTO_REBASE_THRESHOLD
-        value: "1.8"
-      - key: TSNM_EARN_PER_MINUTE
-        value: "10"
-      - key: TSNM_MAX_REWARD_MINUTES_PER_TICK
-        value: "30"
-      - key: MONGODB_WALLET_COLLECTION
-        value: tsnMoneyWallets
-      - key: MONGODB_TRADE_COLLECTION
-        value: tsnMoneyTrades
+IMPORTANT FIX FOR EJSONPARSE
+
+If Render says package.json starts with something like:
+PORT=3010
+TSN_API_BASE_URL=...
+
+then your package.json file in GitHub was accidentally replaced with environment variables.
+package.json must stay JSON. Environment variables must be added in Render > Environment, not inside package.json.
+
+Correct Render settings:
+Build Command: npm install --omit=dev --no-audit --no-fund
+Start Command: npm start
+
+Add these in Render > Environment:
+TSN_API_BASE_URL=https://YOUR-NORMAL-TSN.onrender.com
+MONGODB_URI=mongodb+srv://USERNAME:PASSWORD@cluster0.xxxxx.mongodb.net/tsn_stock?retryWrites=true&w=majority
+TSN_ORIGINAL_MONGODB_URI=mongodb+srv://USERNAME:PASSWORD@cluster0.xxxxx.mongodb.net/tsn?retryWrites=true&w=majority
+TSN_ORIGINAL_MONGODB_DATABASE=tsn
+TSN_ORIGINAL_MONGODB_STATE_COLLECTION=app_state
+TSN_ORIGINAL_MONGODB_STATE_ID=main
+TSN_STOCK_SESSION_SECRET=make-this-a-long-random-secret
+NODE_ENV=production
+NODE_VERSION=22.16.0
+NPM_CONFIG_AUDIT=false
+NPM_CONFIG_FUND=false
+
+Optional:
+PORT=3010
+TSN_STOCK_MAX_HISTORY=302400
+TSN_STOCK_REFRESH_MS=2000
