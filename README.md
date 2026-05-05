@@ -1,6 +1,6 @@
 # TSN Stock Standalone — MongoDB URI persistent history
 
-This is the standalone TSN Stock website. It reads activity data from your original TSN website and saves TSN Stock price snapshots in MongoDB, so the graph history does **not** reset after Render restarts/redeploys.
+This is the standalone TSN Stock website. It reads activity metrics from your original TSN website, calculates the TSN Stock price inside the standalone TSN Stock service, and saves price snapshots in MongoDB, so the graph history does **not** reset after Render restarts/redeploys.
 
 This version uses the normal MongoDB Atlas connection string:
 
@@ -11,6 +11,7 @@ MONGODB_URI=mongodb+srv://...
 ## What is included
 
 - Saves TSN Stock price snapshots roughly every 20 seconds.
+- Calculates the next price from the last MongoDB snapshot, so the number moves when TSN activity changes.
 - Loads old price history after restart/redeploy.
 - Keeps the Nordnet-style hover chart.
 - Uses the official `mongodb` Node package.
@@ -110,7 +111,7 @@ GET /healthz
 
 ## What affects the price?
 
-TSN Stock is fictional. The price changes based on:
+TSN Stock is fictional. The standalone TSN Stock server calculates the price from the previous saved price plus current activity. The price changes based on:
 
 - online users
 - private messages + global comments per hour
@@ -118,3 +119,20 @@ TSN Stock is fictional. The price changes based on:
 - expected activity for the current time of day
 
 It is not a real stock and is not financial advice.
+
+
+## If the number does not move
+
+Use this fixed version. The old MongoDB URI version could save history but still trusted the original TSN API price too much. This version calculates the price inside TSN Stock from:
+
+- latest saved MongoDB price
+- online users
+- messages per hour
+- posts per hour
+- time-of-day expected activity
+
+You can force a new snapshot by opening:
+
+```txt
+/api/stock?force=1
+```

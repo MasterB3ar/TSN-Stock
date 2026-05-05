@@ -132,6 +132,97 @@ function makeSnapshot(stock) {
   };
 }
 
+
+function hourActivityCurve(hour) {
+  const onlineCurve = [0.20, 0.14, 0.10, 0.08, 0.07, 0.08, 0.13, 0.22, 0.34, 0.42, 0.48, 0.52, 0.56, 0.58, 0.60, 0.66, 0.78, 0.92, 1.00, 0.96, 0.86, 0.68, 0.46, 0.30];
+  const messageCurve = [0.16, 0.11, 0.08, 0.06, 0.05, 0.07, 0.12, 0.21, 0.32, 0.40, 0.48, 0.54, 0.58, 0.62, 0.66, 0.74, 0.84, 0.98, 1.00, 0.94, 0.82, 0.63, 0.42, 0.25];
+  const postCurve = [0.12, 0.08, 0.06, 0.05, 0.05, 0.06, 0.10, 0.18, 0.30, 0.38, 0.46, 0.52, 0.56, 0.60, 0.63, 0.70, 0.80, 0.92, 1.00, 0.96, 0.84, 0.62, 0.38, 0.20];
+  const index = Math.max(0, Math.min(23, Number(hour) || 0));
+  return {
+    online: onlineCurve[index],
+    messages: messageCurve[index],
+    posts: postCurve[index]
+  };
+}
+
+function clamp(number, min, max) {
+  return Math.max(min, Math.min(max, Number(number) || 0));
+}
+
+function normalizeMetrics(metrics = {}) {
+  const now = new Date();
+  const hour = Number.isFinite(Number(metrics.hour)) ? Number(metrics.hour) : now.getHours();
+  const curve = hourActivityCurve(hour);
+  const usersTotal = Math.max(1, Number(metrics.usersTotal) || Number(metrics.totalUsers) || Math.max(1, Number(metrics.onlineUsers) || 1));
+  const onlineUsers = Math.max(0, Number(metrics.onlineUsers) || 0);
+  const messagesPerHour = Math.max(0, Number(metrics.messagesPerHour) || 0);
+  const postsPerHour = Math.max(0, Number(metrics.postsPerHour) || 0);
+  const expectedOnline = Math.max(1, Number(metrics.expectedOnline) || usersTotal * curve.online);
+  const expectedMessagesPerHour = Math.max(1, Number(metrics.expectedMessagesPerHour) || usersTotal * 3.2 * curve.messages);
+  const expectedPostsPerHour = Math.max(1, Number(metrics.expectedPostsPerHour) || usersTotal * 0.9 * curve.posts);
+  const onlineRatio = onlineUsers / expectedOnline;
+  const messageRatio = messagesPerHour / expectedMessagesPerHour;
+  const postRatio = postsPerHour / expectedPostsPerHour;
+  const calculatedActivityScore = clamp(onlineRatio * 0.45 + messageRatio * 0.30 + postRatio * 0.25, 0, 3.5);
+
+  return {
+    ...metrics,
+    onlineUsers,
+    usersTotal,
+    messagesPerHour,
+    postsPerHour,
+    hour,
+    expectedOnline: Number(expectedOnline.toFixed(2)),
+    expectedMessagesPerHour: Number(expectedMessagesPerHour.toFixed(2)),
+    expectedPostsPerHour: Number(expectedPostsPerHour.toFixed(2)),
+    onlineRatio: Number(onlineRatio.toFixed(4)),
+    messageRatio: Number(messageRatio.toFixed(4)),
+    postRatio: Number(postRatio.toFixed(4)),
+    activityScore: Number((Number(metrics.activityScore) || calculatedActivityScore).toFixed(3))
+  };
+}
+
+function calculateStandalonePrice(sourceStock, history) {
+  const clean = cleanHistory(history);
+  const lastPoint = clean[clean.length - 1] || null;
+  const previousPrice = Number(lastPoint?.price) || Number(sourceStock?.price) || 100;
+  const previousMetrics = normalizeMetrics(lastPoint?.metrics || {});
+  const metrics = normalizeMetrics(sourceStock?.metrics || {});
+
+  // Target price is based on whether current activity is above/below what is expected for this time of day.
+  const targetPrice = clamp(100 * (0.70 + metrics.activityScore * 0.64), 5, 9999);
+  const targetPull = (targetPrice - previousPrice) * 0.18;
+
+  // Make the chart visibly react when the live activity changes between snapshots.
+  const onlineMomentum = (metrics.onlineUsers - previousMetrics.onlineUsers) * 0.65;
+  const messageMomentum = (metrics.messagesPerHour - previousMetrics.messagesPerHour) * 0.08;
+  const postMomentum = (metrics.postsPerHour - previousMetrics.postsPerHour) * 0.55;
+  const activityMomentum = (metrics.activityScore - previousMetrics.activityScore) * 3.2;
+
+  // Small decay when activity is far below expected, so the graph can also move down.
+  const quietPressure = metrics.activityScore < 0.35 ? -0.18 : 0;
+  const rawMove = clamp(targetPull + onlineMomentum + messageMomentum + postMomentum + activityMomentum + quietPressure, -7.5, 7.5);
+  const price = Number(clamp(previousPrice + rawMove, 1, 9999).toFixed(2));
+  const change = Number((price - previousPrice).toFixed(2));
+  const changePercent = Number((previousPrice ? (change / previousPrice) * 100 : 0).toFixed(2));
+
+  return {
+    ...sourceStock,
+    price,
+    previousPrice: Number(previousPrice.toFixed(2)),
+    change,
+    changePercent,
+    trend: change > 0.01 ? 'up' : change < -0.01 ? 'down' : 'flat',
+    updatedAt: new Date().toISOString(),
+    metrics: {
+      ...metrics,
+      targetPrice: Number(targetPrice.toFixed(2)),
+      priceMove: Number(rawMove.toFixed(4))
+    },
+    pricingEngine: 'standalone-mongodb-history-v2'
+  };
+}
+
 function cleanHistory(documents) {
   return (documents || [])
     .map((doc) => ({
@@ -226,7 +317,12 @@ async function getStockPayload({ force = false } = {}) {
   if (!force && cachedPayload && now - cachedAt < REFRESH_INTERVAL_MS) return cachedPayload;
 
   try {
-    const stock = await fetchOriginalStock();
+    const sourceStock = await fetchOriginalStock();
+    const previousHistory = await loadHistory().catch((error) => {
+      console.error('Could not load previous TSN Stock history:', error.message);
+      return cleanHistory(memoryHistory);
+    });
+    const stock = calculateStandalonePrice(sourceStock, previousHistory);
     const snapshot = makeSnapshot(stock);
     const persistence = await saveSnapshot(snapshot).catch((error) => {
       console.error('Could not save TSN Stock snapshot:', error.message);
@@ -236,7 +332,7 @@ async function getStockPayload({ force = false } = {}) {
     });
     const history = await loadHistory().catch((error) => {
       console.error('Could not load TSN Stock history:', error.message);
-      return cleanHistory(memoryHistory);
+      return cleanHistory([...previousHistory, snapshot, ...memoryHistory]);
     });
     cachedPayload = buildPayload(stock, history, persistence, 'live');
     cachedAt = now;
