@@ -35,13 +35,53 @@
             <p class="eyebrow">Prisgraf</p>
             <h2>Live historik</h2>
           </div>
-          <button id="refreshButton" class="secondary" type="button">Opdater</button>
+          <div class="chart-actions">
+            <button id="refreshButton" class="secondary" type="button">Opdater</button>
+            <button id="resetButton" class="danger-button" type="button">Reset</button>
+          </div>
         </div>
         <div class="chart-shell">
           <canvas id="stockChart" width="1100" height="360" aria-label="TSN Stock graf"></canvas>
           <div id="chartTooltip" class="chart-tooltip hidden"></div>
         </div>
         <p id="refreshInfo" class="refresh-info">Opdaterer automatisk hvert 20. sekund</p>
+      </article>
+    </section>
+
+
+    <section class="money-layout">
+      <article class="card money-card">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">TSN Money</p>
+            <h2>Din TSNM wallet</h2>
+          </div>
+          <span class="money-badge">+10 TSNM/min</span>
+        </div>
+        <div class="wallet-grid">
+          <div><span>Saldo</span><strong id="tsnmBalance">0,00 TSNM</strong></div>
+          <div><span>TSN Stock ejet</span><strong id="tsnShares">0</strong></div>
+          <div><span>Portefølje</span><strong id="portfolioValue">0,00 TSNM</strong></div>
+          <div><span>Net worth</span><strong id="netWorth">0,00 TSNM</strong></div>
+        </div>
+        <p id="rewardInfo" class="small money-note">Du får 10 TSNM for hvert minut, du er online på TSN Stock.</p>
+      </article>
+
+      <article class="card trade-card">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Fiktiv trading</p>
+            <h2>Køb / sælg TSN Stock</h2>
+          </div>
+        </div>
+        <label class="trade-label" for="tradeQuantity">Antal aktier</label>
+        <div class="trade-row">
+          <input id="tradeQuantity" type="number" min="0.001" step="0.001" value="1" inputmode="decimal" />
+          <button id="buyButton" class="buy-button" type="button">Køb</button>
+          <button id="sellButton" class="sell-button" type="button">Sælg</button>
+        </div>
+        <p id="tradeEstimate" class="small">Pris: -- TSNM</p>
+        <p id="tradeStatus" class="small trade-status"></p>
       </article>
     </section>
 
@@ -60,7 +100,7 @@
         <div><strong>30%</strong><span>Beskeder/time</span></div>
         <div><strong>25%</strong><span>Opslag/time</span></div>
       </div>
-      <p class="small">Dette er kun en sjov intern TSN-score. Den kan ikke købes, sælges eller bruges som finansiel rådgivning.</p>
+      <p class="small">Dette er kun en sjov intern TSN-score. TSNM er fiktive point, og TSN Stock er ikke en rigtig aktie eller finansiel rådgivning.</p>
     </section>
 
     <section id="setupHelp" class="setup-help card hidden">

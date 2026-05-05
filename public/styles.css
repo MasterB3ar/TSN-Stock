@@ -93,13 +93,20 @@ h2 { margin-bottom: 10px; }
 
 .chart-card { padding: 22px; }
 .section-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 12px; }
-.secondary {
+.chart-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.secondary, .danger-button {
   border: 1px solid var(--border);
   color: var(--text);
   background: rgba(255, 255, 255, 0.07);
   border-radius: 14px;
   padding: 10px 14px;
 }
+.danger-button {
+  border-color: rgba(255, 107, 107, 0.42);
+  color: #ffd6d6;
+  background: rgba(255, 107, 107, 0.12);
+}
+.danger-button:hover { background: rgba(255, 107, 107, 0.20); }
 canvas { display: block; width: 100%; height: min(360px, 42vh); }
 
 .metrics-grid {
@@ -189,3 +196,116 @@ code { background: rgba(255,255,255,.08); border: 1px solid var(--border); borde
 }
 .persistence-info.connected { color: var(--accent-2); }
 .persistence-info.warning { color: #ffd166; }
+
+/* TSNM wallet and fictional trading */
+.money-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(320px, 0.85fr);
+  gap: 22px;
+  margin: 22px 0;
+}
+
+.money-card,
+.trade-card {
+  padding: 24px;
+}
+
+.money-badge {
+  white-space: nowrap;
+  border-radius: 999px;
+  padding: 8px 12px;
+  border: 1px solid rgba(56, 217, 169, 0.34);
+  background: rgba(56, 217, 169, 0.10);
+  color: var(--accent-2);
+  font-weight: 900;
+  font-size: 0.85rem;
+}
+
+.wallet-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.wallet-grid div {
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  padding: 16px;
+  background: rgba(255, 255, 255, 0.045);
+}
+
+.wallet-grid span,
+.trade-label,
+.money-note,
+.trade-status {
+  color: var(--muted);
+}
+
+.wallet-grid span {
+  display: block;
+  font-size: 0.82rem;
+  margin-bottom: 8px;
+}
+
+.wallet-grid strong {
+  display: block;
+  font-size: clamp(1.05rem, 2vw, 1.45rem);
+  letter-spacing: -0.02em;
+}
+
+.trade-label {
+  display: block;
+  margin-bottom: 8px;
+  font-weight: 700;
+  font-size: 0.9rem;
+}
+
+.trade-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.trade-row input {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 12px 14px;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.07);
+  outline: none;
+}
+
+.trade-row input:focus {
+  border-color: rgba(56, 217, 169, 0.48);
+  box-shadow: 0 0 0 4px rgba(56, 217, 169, 0.10);
+}
+
+.buy-button,
+.sell-button {
+  border: 0;
+  border-radius: 14px;
+  padding: 12px 16px;
+  color: #06120e;
+  font-weight: 900;
+}
+
+.buy-button { background: var(--accent-2); }
+.sell-button { background: #ffd166; }
+.buy-button:hover,
+.sell-button:hover { filter: brightness(1.08); }
+.trade-status { min-height: 1.2em; }
+
+@media (max-width: 850px) {
+  .money-layout,
+  .wallet-grid,
+  .trade-row {
+    grid-template-columns: 1fr;
+  }
+  .money-card,
+  .trade-card {
+    border-radius: 22px;
+    padding: 18px;
+  }
+}

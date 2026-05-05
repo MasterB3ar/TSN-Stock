@@ -17,12 +17,23 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 const MONGODB_URI = String(process.env.MONGODB_URI || '');
 const DATABASE = String(process.env.MONGODB_DATABASE || 'tsn_stock');
 const COLLECTION = String(process.env.MONGODB_COLLECTION || 'stockSnapshots');
+const WALLET_COLLECTION = String(process.env.MONGODB_WALLET_COLLECTION || 'tsnMoneyWallets');
+const TRADE_COLLECTION = String(process.env.MONGODB_TRADE_COLLECTION || 'tsnMoneyTrades');
+const TSNM_EARN_PER_MINUTE = Number(process.env.TSNM_EARN_PER_MINUTE || 10);
+const TSNM_MAX_REWARD_MINUTES_PER_TICK = Number(process.env.TSNM_MAX_REWARD_MINUTES_PER_TICK || 30);
 const MAX_HISTORY_POINTS = Number(process.env.TSN_STOCK_MAX_HISTORY || 720);
-const REFRESH_INTERVAL_MS = Number(process.env.TSN_STOCK_REFRESH_MS || 20000);
+const REFRESH_INTERVAL_MS = Number(process.env.TSN_STOCK_REFRESH_MS || 2000);
+const RESET_KEY = String(process.env.TSN_STOCK_RESET_KEY || '');
+const RESET_BASE_PRICE = Number(process.env.TSN_STOCK_RESET_PRICE || 100);
+const TARGET_BASE_PRICE = Number(process.env.TSN_STOCK_TARGET_BASE_PRICE || RESET_BASE_PRICE || 100);
+const AUTO_REBASE_ENABLED = String(process.env.TSN_STOCK_AUTO_REBASE || 'true').toLowerCase() !== 'false';
+const AUTO_REBASE_THRESHOLD_MULTIPLIER = Number(process.env.TSN_STOCK_AUTO_REBASE_THRESHOLD || 1.8);
 
 const PERSISTENCE_ENABLED = Boolean(MONGODB_URI);
 let mongoClient = null;
 let mongoCollection = null;
+let mongoWalletCollection = null;
+let mongoTradeCollection = null;
 
 let cachedPayload = null;
 let cachedAt = 0;
@@ -88,15 +99,242 @@ async function getMongoCollection() {
   if (!MongoClient) throw new Error('MongoDB driver is not installed. Run npm install.');
   if (mongoCollection) return mongoCollection;
 
-  mongoClient = new MongoClient(MONGODB_URI, {
-    serverSelectionTimeoutMS: 12000,
-    connectTimeoutMS: 12000,
-    maxPoolSize: 5
-  });
-  await mongoClient.connect();
-  mongoCollection = mongoClient.db(DATABASE).collection(COLLECTION);
+  const db = await getMongoDb();
+  mongoCollection = db.collection(COLLECTION);
   await mongoCollection.createIndex({ createdAt: -1 });
   return mongoCollection;
+}
+
+
+async function getMongoDb() {
+  if (!PERSISTENCE_ENABLED) throw new Error('MONGODB_URI is not configured');
+  if (!MongoClient) throw new Error('MongoDB driver is not installed. Run npm install.');
+  if (!mongoClient) {
+    mongoClient = new MongoClient(MONGODB_URI, {
+      serverSelectionTimeoutMS: 12000,
+      connectTimeoutMS: 12000,
+      maxPoolSize: 8
+    });
+    await mongoClient.connect();
+  }
+  return mongoClient.db(DATABASE);
+}
+
+async function getWalletCollection() {
+  if (!PERSISTENCE_ENABLED) throw new Error('MONGODB_URI is not configured');
+  if (mongoWalletCollection) return mongoWalletCollection;
+  const db = await getMongoDb();
+  mongoWalletCollection = db.collection(WALLET_COLLECTION);
+  await mongoWalletCollection.createIndex({ playerId: 1 }, { unique: true });
+  await mongoWalletCollection.createIndex({ updatedAt: -1 });
+  return mongoWalletCollection;
+}
+
+async function getTradeCollection() {
+  if (!PERSISTENCE_ENABLED) throw new Error('MONGODB_URI is not configured');
+  if (mongoTradeCollection) return mongoTradeCollection;
+  const db = await getMongoDb();
+  mongoTradeCollection = db.collection(TRADE_COLLECTION);
+  await mongoTradeCollection.createIndex({ playerId: 1, createdAt: -1 });
+  await mongoTradeCollection.createIndex({ createdAt: -1 });
+  return mongoTradeCollection;
+}
+
+function sanitizePlayerId(value) {
+  return String(value || '').trim().replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 80);
+}
+
+function sanitizePlayerName(value) {
+  return String(value || 'TSN Investor').trim().replace(/[<>]/g, '').slice(0, 40) || 'TSN Investor';
+}
+
+function makeDefaultWallet(playerId, playerName) {
+  const now = new Date().toISOString();
+  return {
+    playerId,
+    playerName: sanitizePlayerName(playerName),
+    balance: 0,
+    shares: 0,
+    avgBuyPrice: 0,
+    realizedProfit: 0,
+    totalEarned: 0,
+    totalBought: 0,
+    totalSold: 0,
+    lastRewardAt: now,
+    createdAt: now,
+    updatedAt: now
+  };
+}
+
+const memoryWallets = new Map();
+const memoryTrades = [];
+
+async function readJsonBody(req, maxBytes = 100_000) {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    req.on('data', (chunk) => {
+      body += chunk;
+      if (body.length > maxBytes) {
+        reject(new Error('Request body is too large'));
+        req.destroy();
+      }
+    });
+    req.on('end', () => {
+      if (!body) return resolve({});
+      try { resolve(JSON.parse(body)); }
+      catch { reject(new Error('Invalid JSON body')); }
+    });
+    req.on('error', reject);
+  });
+}
+
+async function getWallet(playerId, playerName) {
+  const cleanId = sanitizePlayerId(playerId);
+  if (!cleanId) throw new Error('Missing playerId');
+
+  if (!PERSISTENCE_ENABLED) {
+    if (!memoryWallets.has(cleanId)) memoryWallets.set(cleanId, makeDefaultWallet(cleanId, playerName));
+    const wallet = memoryWallets.get(cleanId);
+    if (playerName && wallet.playerName !== sanitizePlayerName(playerName)) wallet.playerName = sanitizePlayerName(playerName);
+    return wallet;
+  }
+
+  const collection = await getWalletCollection();
+  const now = new Date().toISOString();
+  const existing = await collection.findOne({ playerId: cleanId }, { projection: { _id: 0 } });
+  if (existing) {
+    if (playerName && existing.playerName !== sanitizePlayerName(playerName)) {
+      await collection.updateOne({ playerId: cleanId }, { $set: { playerName: sanitizePlayerName(playerName), updatedAt: now } });
+      existing.playerName = sanitizePlayerName(playerName);
+    }
+    return existing;
+  }
+  const wallet = makeDefaultWallet(cleanId, playerName);
+  await collection.insertOne(wallet);
+  return wallet;
+}
+
+function publicWallet(wallet, stockPrice = 100, reward = null) {
+  const balance = Number(wallet.balance) || 0;
+  const shares = Number(wallet.shares) || 0;
+  const portfolioValue = shares * (Number(stockPrice) || 0);
+  const netWorth = balance + portfolioValue;
+  const avgBuyPrice = Number(wallet.avgBuyPrice) || 0;
+  const unrealizedProfit = shares > 0 ? portfolioValue - shares * avgBuyPrice : 0;
+  return {
+    playerId: wallet.playerId,
+    playerName: wallet.playerName,
+    balance: Number(balance.toFixed(2)),
+    shares: Number(shares.toFixed(6)),
+    avgBuyPrice: Number(avgBuyPrice.toFixed(2)),
+    realizedProfit: Number((Number(wallet.realizedProfit) || 0).toFixed(2)),
+    unrealizedProfit: Number(unrealizedProfit.toFixed(2)),
+    totalEarned: Number((Number(wallet.totalEarned) || 0).toFixed(2)),
+    totalBought: Number((Number(wallet.totalBought) || 0).toFixed(2)),
+    totalSold: Number((Number(wallet.totalSold) || 0).toFixed(2)),
+    portfolioValue: Number(portfolioValue.toFixed(2)),
+    netWorth: Number(netWorth.toFixed(2)),
+    lastRewardAt: wallet.lastRewardAt,
+    updatedAt: wallet.updatedAt,
+    reward
+  };
+}
+
+async function saveWallet(wallet) {
+  wallet.updatedAt = new Date().toISOString();
+  if (!PERSISTENCE_ENABLED) {
+    memoryWallets.set(wallet.playerId, wallet);
+    return wallet;
+  }
+  const collection = await getWalletCollection();
+  await collection.updateOne({ playerId: wallet.playerId }, { $set: wallet }, { upsert: true });
+  return wallet;
+}
+
+function calculateReward(wallet) {
+  const nowMs = Date.now();
+  const lastMs = Date.parse(wallet.lastRewardAt || wallet.createdAt || new Date().toISOString()) || nowMs;
+  const fullMinutes = Math.floor((nowMs - lastMs) / 60_000);
+  const cappedMinutes = clamp(fullMinutes, 0, Math.max(1, TSNM_MAX_REWARD_MINUTES_PER_TICK));
+  const amount = Number((cappedMinutes * TSNM_EARN_PER_MINUTE).toFixed(2));
+  return { minutes: cappedMinutes, amount, nextRewardInMs: Math.max(0, 60_000 - ((nowMs - lastMs) % 60_000)) };
+}
+
+async function rewardOnlineMinutes(playerId, playerName) {
+  const wallet = await getWallet(playerId, playerName);
+  const reward = calculateReward(wallet);
+  if (reward.minutes > 0) {
+    const now = new Date();
+    wallet.balance = Number((Number(wallet.balance || 0) + reward.amount).toFixed(2));
+    wallet.totalEarned = Number((Number(wallet.totalEarned || 0) + reward.amount).toFixed(2));
+    wallet.lastRewardAt = new Date(now.getTime() - (Date.now() - Date.parse(wallet.lastRewardAt || now.toISOString())) % 60_000).toISOString();
+    await saveWallet(wallet);
+  }
+  return { wallet, reward };
+}
+
+async function recordTrade(trade) {
+  if (!PERSISTENCE_ENABLED) {
+    memoryTrades.push(trade);
+    while (memoryTrades.length > 500) memoryTrades.shift();
+    return;
+  }
+  const collection = await getTradeCollection();
+  await collection.insertOne(trade);
+}
+
+async function getCurrentStockPrice() {
+  const payload = await getStockPayload({ force: true });
+  return Number(payload?.stock?.price) || TARGET_BASE_PRICE || 100;
+}
+
+async function tradeStock({ playerId, playerName, type, quantity }) {
+  const cleanType = String(type || '').toLowerCase();
+  const qty = Number(quantity);
+  if (!['buy', 'sell'].includes(cleanType)) throw new Error('Trade type must be buy or sell');
+  if (!Number.isFinite(qty) || qty <= 0) throw new Error('Quantity must be higher than 0');
+  if (qty > 1_000_000) throw new Error('Quantity is too large');
+
+  const { wallet } = await rewardOnlineMinutes(playerId, playerName);
+  const price = await getCurrentStockPrice();
+  const value = Number((qty * price).toFixed(2));
+  const now = new Date().toISOString();
+
+  if (cleanType === 'buy') {
+    if ((Number(wallet.balance) || 0) + 0.0001 < value) throw new Error('Not enough TSNM balance');
+    const oldShares = Number(wallet.shares) || 0;
+    const oldCost = oldShares * (Number(wallet.avgBuyPrice) || 0);
+    const newShares = oldShares + qty;
+    wallet.balance = Number((Number(wallet.balance || 0) - value).toFixed(2));
+    wallet.shares = Number(newShares.toFixed(6));
+    wallet.avgBuyPrice = Number(((oldCost + value) / newShares).toFixed(2));
+    wallet.totalBought = Number((Number(wallet.totalBought || 0) + value).toFixed(2));
+  } else {
+    if ((Number(wallet.shares) || 0) + 0.000001 < qty) throw new Error('Not enough TSN Stock shares');
+    const costBasis = qty * (Number(wallet.avgBuyPrice) || 0);
+    const profit = value - costBasis;
+    wallet.balance = Number((Number(wallet.balance || 0) + value).toFixed(2));
+    wallet.shares = Number((Number(wallet.shares || 0) - qty).toFixed(6));
+    if (wallet.shares <= 0.000001) {
+      wallet.shares = 0;
+      wallet.avgBuyPrice = 0;
+    }
+    wallet.realizedProfit = Number((Number(wallet.realizedProfit || 0) + profit).toFixed(2));
+    wallet.totalSold = Number((Number(wallet.totalSold || 0) + value).toFixed(2));
+  }
+
+  await saveWallet(wallet);
+  const trade = {
+    playerId: wallet.playerId,
+    playerName: wallet.playerName,
+    type: cleanType,
+    quantity: Number(qty.toFixed(6)),
+    price: Number(price.toFixed(2)),
+    value,
+    createdAt: now
+  };
+  await recordTrade(trade);
+  return { wallet, trade, price };
 }
 
 function normalizeSourceStock(data) {
@@ -182,27 +420,99 @@ function normalizeMetrics(metrics = {}) {
   };
 }
 
+
+function metricDelta(current, previous) {
+  const onlineDelta = Number(current.onlineUsers || 0) - Number(previous.onlineUsers || 0);
+  const messageDelta = Number(current.messagesPerHour || 0) - Number(previous.messagesPerHour || 0);
+  const postDelta = Number(current.postsPerHour || 0) - Number(previous.postsPerHour || 0);
+  const activityDelta = Number(current.activityScore || 0) - Number(previous.activityScore || 0);
+  return {
+    onlineDelta,
+    messageDelta,
+    postDelta,
+    activityDelta,
+    changed: Math.abs(onlineDelta) > 0.0001
+      || Math.abs(messageDelta) > 0.0001
+      || Math.abs(postDelta) > 0.0001
+      || Math.abs(activityDelta) > 0.0001
+  };
+}
+
+function sameSnapshotMetrics(a = {}, b = {}) {
+  return Math.abs(Number(a.onlineUsers || 0) - Number(b.onlineUsers || 0)) < 0.0001
+    && Math.abs(Number(a.messagesPerHour || 0) - Number(b.messagesPerHour || 0)) < 0.0001
+    && Math.abs(Number(a.postsPerHour || 0) - Number(b.postsPerHour || 0)) < 0.0001
+    && Math.abs(Number(a.activityScore || 0) - Number(b.activityScore || 0)) < 0.0001;
+}
+
 function calculateStandalonePrice(sourceStock, history) {
   const clean = cleanHistory(history);
   const lastPoint = clean[clean.length - 1] || null;
   const previousPrice = Number(lastPoint?.price) || Number(sourceStock?.price) || 100;
   const previousMetrics = normalizeMetrics(lastPoint?.metrics || {});
   const metrics = normalizeMetrics(sourceStock?.metrics || {});
+  const deltas = metricDelta(metrics, previousMetrics);
 
-  // Target price is based on whether current activity is above/below what is expected for this time of day.
-  const targetPrice = clamp(100 * (0.70 + metrics.activityScore * 0.64), 5, 9999);
-  const targetPull = (targetPrice - previousPrice) * 0.18;
+  const activeUsers = metrics.onlineUsers > 0;
+  const activeMessages = metrics.messagesPerHour > 0;
+  const activePosts = metrics.postsPerHour > 0;
+  const hasAnyActivity = activeUsers || activeMessages || activePosts;
+  const hasStrongActivity = metrics.onlineUsers >= 2 || metrics.messagesPerHour >= 3 || metrics.postsPerHour >= 1 || metrics.activityScore >= 0.55;
+  const activityIncreased = deltas.onlineDelta > 0 || deltas.messageDelta > 0 || deltas.postDelta > 0 || deltas.activityDelta > 0.001;
 
-  // Make the chart visibly react when the live activity changes between snapshots.
-  const onlineMomentum = (metrics.onlineUsers - previousMetrics.onlineUsers) * 0.65;
-  const messageMomentum = (metrics.messagesPerHour - previousMetrics.messagesPerHour) * 0.08;
-  const postMomentum = (metrics.postsPerHour - previousMetrics.postsPerHour) * 0.55;
-  const activityMomentum = (metrics.activityScore - previousMetrics.activityScore) * 3.2;
+  // Rebased bullish model: TSN Stock should feel active, but it should normally trade
+  // around 100 instead of running away toward 500+. Activity can still push it up, but
+  // the engine has stronger gravity back toward the configured base price.
+  const basePrice = clamp(TARGET_BASE_PRICE, 1, 99999);
+  const targetPrice = clamp(basePrice * (0.92 + metrics.activityScore * 0.55), basePrice * 0.55, basePrice * 1.85);
+  const distanceFromBase = previousPrice - basePrice;
+  const targetPull = (targetPrice - previousPrice) * 0.13;
+  const baseGravity = distanceFromBase > basePrice * 0.35
+    ? -Math.min(35, distanceFromBase * 0.22)
+    : distanceFromBase < -basePrice * 0.25
+      ? Math.min(8, Math.abs(distanceFromBase) * 0.09)
+      : 0;
 
-  // Small decay when activity is far below expected, so the graph can also move down.
-  const quietPressure = metrics.activityScore < 0.35 ? -0.18 : 0;
-  const rawMove = clamp(targetPull + onlineMomentum + messageMomentum + postMomentum + activityMomentum + quietPressure, -7.5, 7.5);
-  const price = Number(clamp(previousPrice + rawMove, 1, 9999).toFixed(2));
+  const activityLevelBoost =
+    metrics.onlineUsers * 0.018
+    + metrics.messagesPerHour * 0.009
+    + metrics.postsPerHour * 0.055
+    + metrics.activityScore * 0.07;
+
+  const onlineMomentum = deltas.onlineDelta * 0.42;
+  const messageMomentum = deltas.messageDelta * 0.09;
+  const postMomentum = deltas.postDelta * 0.55;
+  const activityMomentum = deltas.activityDelta * 2.15;
+
+  let rawMove = targetPull + baseGravity + activityLevelBoost + onlineMomentum + messageMomentum + postMomentum + activityMomentum;
+
+  // Only apply negative pressure when TSN is completely quiet. With active users/messages/posts,
+  // negative target pull is softened so a busy TSN does not trend down unfairly.
+  if (!hasAnyActivity) {
+    rawMove -= 0.05;
+  } else if (rawMove < 0) {
+    rawMove *= 0.18;
+  }
+
+  // Any new activity should create a visible green tick.
+  if (activityIncreased && rawMove < 0.03) {
+    rawMove = 0.03;
+  }
+
+  // If there is strong current activity, keep the stock biased upward even if the previous
+  // snapshot had slightly higher activity. This makes active TSN sessions feel bullish.
+  if (hasStrongActivity && previousPrice < basePrice * 1.35 && rawMove < 0.012) {
+    rawMove = 0.012;
+  }
+
+  // When activity is unchanged but still present, drift up slowly instead of going flat/down.
+  if (!deltas.changed && hasAnyActivity && previousPrice < basePrice * 1.30 && rawMove < 0.006) {
+    rawMove = 0.006;
+  }
+
+  rawMove = clamp(rawMove, previousPrice > basePrice * 1.8 ? -45 : -8, 4.5);
+
+  const price = Number(clamp(previousPrice + rawMove, 1, 99999).toFixed(2));
   const change = Number((price - previousPrice).toFixed(2));
   const changePercent = Number((previousPrice ? (change / previousPrice) * 100 : 0).toFixed(2));
 
@@ -217,9 +527,16 @@ function calculateStandalonePrice(sourceStock, history) {
     metrics: {
       ...metrics,
       targetPrice: Number(targetPrice.toFixed(2)),
-      priceMove: Number(rawMove.toFixed(4))
+      priceMove: Number(rawMove.toFixed(4)),
+      bullishActivityBoost: Number(activityLevelBoost.toFixed(4)),
+      activeUsers,
+      activeMessages,
+      activePosts,
+      hasStrongActivity,
+      metricDeltas: deltas,
+      changedSinceLastSnapshot: deltas.changed
     },
-    pricingEngine: 'standalone-mongodb-history-v2'
+    pricingEngine: 'bullish-instant-standalone-mongodb-history-v4'
   };
 }
 
@@ -260,6 +577,55 @@ async function loadHistory() {
   return cleanHistory(documents);
 }
 
+async function rebaseHistoryIfNeeded(history) {
+  const clean = cleanHistory(history);
+  const last = clean[clean.length - 1];
+  const target = clamp(TARGET_BASE_PRICE, 1, 99999);
+  const threshold = target * Math.max(1.05, AUTO_REBASE_THRESHOLD_MULTIPLIER || 1.8);
+
+  if (!AUTO_REBASE_ENABLED || !last || last.price <= threshold) {
+    return { history: clean, rebased: false, factor: 1 };
+  }
+
+  const factor = target / last.price;
+  const rebasedAt = new Date().toISOString();
+
+  if (PERSISTENCE_ENABLED) {
+    const collection = await getMongoCollection();
+    const documents = await collection
+      .find({}, { projection: { _id: 1, price: 1, change: 1 } })
+      .sort({ createdAt: -1 })
+      .limit(MAX_HISTORY_POINTS)
+      .toArray();
+
+    for (const doc of documents) {
+      await collection.updateOne(
+        { _id: doc._id },
+        {
+          $set: {
+            price: Number(clamp(Number(doc.price || 0) * factor, 1, 99999).toFixed(2)),
+            change: Number(((Number(doc.change) || 0) * factor).toFixed(2)),
+            rebasedAround: target,
+            rebaseFactor: Number(factor.toFixed(8)),
+            rebasedAt
+          }
+        }
+      );
+    }
+    cachedPayload = null;
+    cachedAt = 0;
+    return { history: await loadHistory(), rebased: true, factor };
+  }
+
+  memoryHistory = clean.map((point) => ({
+    ...point,
+    price: Number(clamp(point.price * factor, 1, 99999).toFixed(2)),
+    change: Number(((Number(point.change) || 0) * factor).toFixed(2)),
+    metrics: { ...(point.metrics || {}), rebasedAround: target, rebaseFactor: Number(factor.toFixed(8)), rebasedAt }
+  }));
+  return { history: cleanHistory(memoryHistory), rebased: true, factor };
+}
+
 async function saveSnapshot(snapshot) {
   if (!PERSISTENCE_ENABLED) {
     memoryHistory.push(snapshot);
@@ -269,6 +635,66 @@ async function saveSnapshot(snapshot) {
   const collection = await getMongoCollection();
   await collection.insertOne(snapshot);
   return { saved: true, mode: 'mongodb-uri' };
+}
+
+
+async function resetStockHistory() {
+  cachedPayload = null;
+  cachedAt = 0;
+  memoryHistory = [];
+
+  if (PERSISTENCE_ENABLED) {
+    const collection = await getMongoCollection();
+    await collection.deleteMany({});
+  }
+
+  const now = new Date().toISOString();
+  const resetSnapshot = {
+    price: Number(clamp(RESET_BASE_PRICE, 1, 99999).toFixed(2)),
+    change: 0,
+    changePercent: 0,
+    trend: 'flat',
+    metrics: {
+      onlineUsers: 0,
+      messagesPerHour: 0,
+      postsPerHour: 0,
+      activityScore: 0,
+      reset: true
+    },
+    sourceUpdatedAt: now,
+    createdAt: now,
+    source: 'tsn-stock-reset'
+  };
+
+  const persistence = await saveSnapshot(resetSnapshot).catch((error) => {
+    console.error('Could not save reset snapshot:', error.message);
+    memoryHistory.push(resetSnapshot);
+    memoryHistory = cleanHistory(memoryHistory);
+    return { saved: false, mode: 'memory-fallback' };
+  });
+
+  const history = await loadHistory().catch(() => cleanHistory([resetSnapshot, ...memoryHistory]));
+  cachedPayload = buildPayload({
+    price: resetSnapshot.price,
+    previousPrice: resetSnapshot.price,
+    change: 0,
+    changePercent: 0,
+    trend: 'flat',
+    updatedAt: now,
+    metrics: resetSnapshot.metrics,
+    disclaimer: 'Fiktiv TSN-aktivitetspris. Historikken blev nulstillet.',
+    pricingEngine: 'reset-baseline'
+  }, history, persistence, 'reset');
+  cachedAt = Date.now();
+  return cachedPayload;
+}
+
+function requestResetKey(req, url) {
+  return String(req.headers['x-reset-key'] || url.searchParams.get('key') || '');
+}
+
+function resetAllowed(req, url) {
+  return !RESET_KEY || requestResetKey(req, url) === RESET_KEY;
 }
 
 async function fetchOriginalStock() {
@@ -318,11 +744,24 @@ async function getStockPayload({ force = false } = {}) {
 
   try {
     const sourceStock = await fetchOriginalStock();
-    const previousHistory = await loadHistory().catch((error) => {
+    const loadedHistory = await loadHistory().catch((error) => {
       console.error('Could not load previous TSN Stock history:', error.message);
       return cleanHistory(memoryHistory);
     });
+    const rebaseResult = await rebaseHistoryIfNeeded(loadedHistory).catch((error) => {
+      console.error('Could not auto-rebase TSN Stock history:', error.message);
+      return { history: loadedHistory, rebased: false, factor: 1 };
+    });
+    const previousHistory = rebaseResult.history;
     const stock = calculateStandalonePrice(sourceStock, previousHistory);
+    if (rebaseResult.rebased) {
+      stock.metrics = {
+        ...(stock.metrics || {}),
+        autoRebased: true,
+        rebaseFactor: Number(rebaseResult.factor.toFixed(8)),
+        rebasedAround: clamp(TARGET_BASE_PRICE, 1, 99999)
+      };
+    }
     const snapshot = makeSnapshot(stock);
     const persistence = await saveSnapshot(snapshot).catch((error) => {
       console.error('Could not save TSN Stock snapshot:', error.message);
@@ -365,7 +804,12 @@ const server = http.createServer((req, res) => {
     return sendJson(res, 200, {
       ok: true,
       service: 'tsn-stock',
+      resetEnabled: true,
+      resetRequiresKey: Boolean(RESET_KEY),
+      targetBasePrice: TARGET_BASE_PRICE,
+      autoRebaseEnabled: AUTO_REBASE_ENABLED,
       persistence: PERSISTENCE_ENABLED ? 'mongodb-uri' : 'memory',
+      tsnMoney: { earnPerMinute: TSNM_EARN_PER_MINUTE, walletCollection: WALLET_COLLECTION, tradeCollection: TRADE_COLLECTION },
       tsnApiConfigured: Boolean(TSN_API_BASE_URL)
     });
   }
@@ -381,6 +825,53 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+
+  if (urlPath === '/api/wallet') {
+    if (req.method !== 'GET') return sendJson(res, 405, { ok: false, error: 'Use GET for wallet.' });
+    const playerId = url.searchParams.get('playerId') || req.headers['x-player-id'];
+    const playerName = url.searchParams.get('playerName') || req.headers['x-player-name'];
+    Promise.all([getWallet(playerId, playerName), getStockPayload({ force: false }).catch(() => null)])
+      .then(([wallet, payload]) => sendJson(res, 200, {
+        ok: true,
+        wallet: publicWallet(wallet, payload?.stock?.price || TARGET_BASE_PRICE),
+        earnPerMinute: TSNM_EARN_PER_MINUTE,
+        fictional: true
+      }))
+      .catch((error) => sendJson(res, 400, { ok: false, error: error.message }));
+    return;
+  }
+
+  if (urlPath === '/api/wallet/tick') {
+    if (req.method !== 'POST') return sendJson(res, 405, { ok: false, error: 'Use POST for wallet tick.' });
+    readJsonBody(req)
+      .then((body) => Promise.all([
+        rewardOnlineMinutes(body.playerId || req.headers['x-player-id'], body.playerName || req.headers['x-player-name']),
+        getStockPayload({ force: false }).catch(() => null)
+      ]))
+      .then(([result, payload]) => sendJson(res, 200, {
+        ok: true,
+        wallet: publicWallet(result.wallet, payload?.stock?.price || TARGET_BASE_PRICE, result.reward),
+        earnPerMinute: TSNM_EARN_PER_MINUTE,
+        fictional: true
+      }))
+      .catch((error) => sendJson(res, 400, { ok: false, error: error.message }));
+    return;
+  }
+
+  if (urlPath === '/api/trade') {
+    if (req.method !== 'POST') return sendJson(res, 405, { ok: false, error: 'Use POST for trading.' });
+    readJsonBody(req)
+      .then((body) => tradeStock(body))
+      .then((result) => sendJson(res, 200, {
+        ok: true,
+        wallet: publicWallet(result.wallet, result.price),
+        trade: result.trade,
+        fictional: true
+      }))
+      .catch((error) => sendJson(res, 400, { ok: false, error: error.message }));
+    return;
+  }
+
   if (urlPath === '/api/history') {
     loadHistory()
       .then((history) => sendJson(res, 200, {
@@ -392,13 +883,31 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+
+  if (urlPath === '/api/reset') {
+    if (req.method !== 'POST') {
+      return sendJson(res, 405, { ok: false, error: 'Use POST to reset TSN Stock.' });
+    }
+    if (!resetAllowed(req, url)) {
+      return sendJson(res, 401, { ok: false, error: 'Reset key is missing or wrong.' });
+    }
+    resetStockHistory()
+      .then((payload) => sendJson(res, 200, { ...payload, reset: true }))
+      .catch((error) => sendJson(res, 500, { ok: false, error: error.message }));
+    return;
+  }
+
   if (urlPath === '/config.js') {
     return send(
       res,
       200,
       `window.TSN_STOCK_CONFIG = ${JSON.stringify({
         refreshIntervalMs: REFRESH_INTERVAL_MS,
-        persistenceEnabled: PERSISTENCE_ENABLED
+        persistenceEnabled: PERSISTENCE_ENABLED,
+        resetRequiresKey: Boolean(RESET_KEY),
+        targetBasePrice: TARGET_BASE_PRICE,
+        autoRebaseEnabled: AUTO_REBASE_ENABLED,
+        tsnmEarnPerMinute: TSNM_EARN_PER_MINUTE
       })};`,
       'application/javascript; charset=utf-8'
     );
