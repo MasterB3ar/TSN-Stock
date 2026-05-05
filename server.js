@@ -19,6 +19,11 @@ const DATABASE = String(process.env.MONGODB_DATABASE || 'tsn_stock');
 const COLLECTION = String(process.env.MONGODB_COLLECTION || 'stockSnapshots');
 const MAX_HISTORY_POINTS = Number(process.env.TSN_STOCK_MAX_HISTORY || 720);
 const REFRESH_INTERVAL_MS = Number(process.env.TSN_STOCK_REFRESH_MS || 2000);
+const RESET_KEY = String(process.env.TSN_STOCK_RESET_KEY || '');
+const RESET_BASE_PRICE = Number(process.env.TSN_STOCK_RESET_PRICE || 100);
+const TARGET_BASE_PRICE = Number(process.env.TSN_STOCK_TARGET_BASE_PRICE || RESET_BASE_PRICE || 100);
+const AUTO_REBASE_ENABLED = String(process.env.TSN_STOCK_AUTO_REBASE || 'true').toLowerCase() !== 'false';
+const AUTO_REBASE_THRESHOLD_MULTIPLIER = Number(process.env.TSN_STOCK_AUTO_REBASE_THRESHOLD || 1.8);
 
 const PERSISTENCE_ENABLED = Boolean(MONGODB_URI);
 let mongoClient = null;
@@ -222,25 +227,31 @@ function calculateStandalonePrice(sourceStock, history) {
   const hasStrongActivity = metrics.onlineUsers >= 2 || metrics.messagesPerHour >= 3 || metrics.postsPerHour >= 1 || metrics.activityScore >= 0.55;
   const activityIncreased = deltas.onlineDelta > 0 || deltas.messageDelta > 0 || deltas.postDelta > 0 || deltas.activityDelta > 0.001;
 
-  // Bullish model: TSN Stock rewards real use more strongly than it punishes quiet periods.
-  // It no longer drops just because activity is below a time-of-day expectation. If users are
-  // online or people are posting/chatting, the natural pressure is upward.
-  const basePrice = 100;
-  const targetPrice = clamp(basePrice * (0.94 + metrics.activityScore * 1.18), 5, 99999);
-  const targetPull = (targetPrice - previousPrice) * 0.055;
+  // Rebased bullish model: TSN Stock should feel active, but it should normally trade
+  // around 100 instead of running away toward 500+. Activity can still push it up, but
+  // the engine has stronger gravity back toward the configured base price.
+  const basePrice = clamp(TARGET_BASE_PRICE, 1, 99999);
+  const targetPrice = clamp(basePrice * (0.92 + metrics.activityScore * 0.55), basePrice * 0.55, basePrice * 1.85);
+  const distanceFromBase = previousPrice - basePrice;
+  const targetPull = (targetPrice - previousPrice) * 0.13;
+  const baseGravity = distanceFromBase > basePrice * 0.35
+    ? -Math.min(35, distanceFromBase * 0.22)
+    : distanceFromBase < -basePrice * 0.25
+      ? Math.min(8, Math.abs(distanceFromBase) * 0.09)
+      : 0;
 
   const activityLevelBoost =
-    metrics.onlineUsers * 0.035
-    + metrics.messagesPerHour * 0.018
-    + metrics.postsPerHour * 0.12
-    + metrics.activityScore * 0.18;
+    metrics.onlineUsers * 0.018
+    + metrics.messagesPerHour * 0.009
+    + metrics.postsPerHour * 0.055
+    + metrics.activityScore * 0.07;
 
-  const onlineMomentum = deltas.onlineDelta * 1.35;
-  const messageMomentum = deltas.messageDelta * 0.34;
-  const postMomentum = deltas.postDelta * 1.85;
-  const activityMomentum = deltas.activityDelta * 8.75;
+  const onlineMomentum = deltas.onlineDelta * 0.42;
+  const messageMomentum = deltas.messageDelta * 0.09;
+  const postMomentum = deltas.postDelta * 0.55;
+  const activityMomentum = deltas.activityDelta * 2.15;
 
-  let rawMove = targetPull + activityLevelBoost + onlineMomentum + messageMomentum + postMomentum + activityMomentum;
+  let rawMove = targetPull + baseGravity + activityLevelBoost + onlineMomentum + messageMomentum + postMomentum + activityMomentum;
 
   // Only apply negative pressure when TSN is completely quiet. With active users/messages/posts,
   // negative target pull is softened so a busy TSN does not trend down unfairly.
@@ -257,16 +268,16 @@ function calculateStandalonePrice(sourceStock, history) {
 
   // If there is strong current activity, keep the stock biased upward even if the previous
   // snapshot had slightly higher activity. This makes active TSN sessions feel bullish.
-  if (hasStrongActivity && rawMove < 0.015) {
-    rawMove = 0.015;
+  if (hasStrongActivity && previousPrice < basePrice * 1.35 && rawMove < 0.012) {
+    rawMove = 0.012;
   }
 
   // When activity is unchanged but still present, drift up slowly instead of going flat/down.
-  if (!deltas.changed && hasAnyActivity && rawMove < 0.01) {
-    rawMove = 0.01;
+  if (!deltas.changed && hasAnyActivity && previousPrice < basePrice * 1.30 && rawMove < 0.006) {
+    rawMove = 0.006;
   }
 
-  rawMove = clamp(rawMove, -1.25, 12.5);
+  rawMove = clamp(rawMove, previousPrice > basePrice * 1.8 ? -45 : -8, 4.5);
 
   const price = Number(clamp(previousPrice + rawMove, 1, 99999).toFixed(2));
   const change = Number((price - previousPrice).toFixed(2));
@@ -333,6 +344,55 @@ async function loadHistory() {
   return cleanHistory(documents);
 }
 
+async function rebaseHistoryIfNeeded(history) {
+  const clean = cleanHistory(history);
+  const last = clean[clean.length - 1];
+  const target = clamp(TARGET_BASE_PRICE, 1, 99999);
+  const threshold = target * Math.max(1.05, AUTO_REBASE_THRESHOLD_MULTIPLIER || 1.8);
+
+  if (!AUTO_REBASE_ENABLED || !last || last.price <= threshold) {
+    return { history: clean, rebased: false, factor: 1 };
+  }
+
+  const factor = target / last.price;
+  const rebasedAt = new Date().toISOString();
+
+  if (PERSISTENCE_ENABLED) {
+    const collection = await getMongoCollection();
+    const documents = await collection
+      .find({}, { projection: { _id: 1, price: 1, change: 1 } })
+      .sort({ createdAt: -1 })
+      .limit(MAX_HISTORY_POINTS)
+      .toArray();
+
+    for (const doc of documents) {
+      await collection.updateOne(
+        { _id: doc._id },
+        {
+          $set: {
+            price: Number(clamp(Number(doc.price || 0) * factor, 1, 99999).toFixed(2)),
+            change: Number(((Number(doc.change) || 0) * factor).toFixed(2)),
+            rebasedAround: target,
+            rebaseFactor: Number(factor.toFixed(8)),
+            rebasedAt
+          }
+        }
+      );
+    }
+    cachedPayload = null;
+    cachedAt = 0;
+    return { history: await loadHistory(), rebased: true, factor };
+  }
+
+  memoryHistory = clean.map((point) => ({
+    ...point,
+    price: Number(clamp(point.price * factor, 1, 99999).toFixed(2)),
+    change: Number(((Number(point.change) || 0) * factor).toFixed(2)),
+    metrics: { ...(point.metrics || {}), rebasedAround: target, rebaseFactor: Number(factor.toFixed(8)), rebasedAt }
+  }));
+  return { history: cleanHistory(memoryHistory), rebased: true, factor };
+}
+
 async function saveSnapshot(snapshot) {
   if (!PERSISTENCE_ENABLED) {
     memoryHistory.push(snapshot);
@@ -342,6 +402,66 @@ async function saveSnapshot(snapshot) {
   const collection = await getMongoCollection();
   await collection.insertOne(snapshot);
   return { saved: true, mode: 'mongodb-uri' };
+}
+
+
+async function resetStockHistory() {
+  cachedPayload = null;
+  cachedAt = 0;
+  memoryHistory = [];
+
+  if (PERSISTENCE_ENABLED) {
+    const collection = await getMongoCollection();
+    await collection.deleteMany({});
+  }
+
+  const now = new Date().toISOString();
+  const resetSnapshot = {
+    price: Number(clamp(RESET_BASE_PRICE, 1, 99999).toFixed(2)),
+    change: 0,
+    changePercent: 0,
+    trend: 'flat',
+    metrics: {
+      onlineUsers: 0,
+      messagesPerHour: 0,
+      postsPerHour: 0,
+      activityScore: 0,
+      reset: true
+    },
+    sourceUpdatedAt: now,
+    createdAt: now,
+    source: 'tsn-stock-reset'
+  };
+
+  const persistence = await saveSnapshot(resetSnapshot).catch((error) => {
+    console.error('Could not save reset snapshot:', error.message);
+    memoryHistory.push(resetSnapshot);
+    memoryHistory = cleanHistory(memoryHistory);
+    return { saved: false, mode: 'memory-fallback' };
+  });
+
+  const history = await loadHistory().catch(() => cleanHistory([resetSnapshot, ...memoryHistory]));
+  cachedPayload = buildPayload({
+    price: resetSnapshot.price,
+    previousPrice: resetSnapshot.price,
+    change: 0,
+    changePercent: 0,
+    trend: 'flat',
+    updatedAt: now,
+    metrics: resetSnapshot.metrics,
+    disclaimer: 'Fiktiv TSN-aktivitetspris. Historikken blev nulstillet.',
+    pricingEngine: 'reset-baseline'
+  }, history, persistence, 'reset');
+  cachedAt = Date.now();
+  return cachedPayload;
+}
+
+function requestResetKey(req, url) {
+  return String(req.headers['x-reset-key'] || url.searchParams.get('key') || '');
+}
+
+function resetAllowed(req, url) {
+  return !RESET_KEY || requestResetKey(req, url) === RESET_KEY;
 }
 
 async function fetchOriginalStock() {
@@ -391,11 +511,24 @@ async function getStockPayload({ force = false } = {}) {
 
   try {
     const sourceStock = await fetchOriginalStock();
-    const previousHistory = await loadHistory().catch((error) => {
+    const loadedHistory = await loadHistory().catch((error) => {
       console.error('Could not load previous TSN Stock history:', error.message);
       return cleanHistory(memoryHistory);
     });
+    const rebaseResult = await rebaseHistoryIfNeeded(loadedHistory).catch((error) => {
+      console.error('Could not auto-rebase TSN Stock history:', error.message);
+      return { history: loadedHistory, rebased: false, factor: 1 };
+    });
+    const previousHistory = rebaseResult.history;
     const stock = calculateStandalonePrice(sourceStock, previousHistory);
+    if (rebaseResult.rebased) {
+      stock.metrics = {
+        ...(stock.metrics || {}),
+        autoRebased: true,
+        rebaseFactor: Number(rebaseResult.factor.toFixed(8)),
+        rebasedAround: clamp(TARGET_BASE_PRICE, 1, 99999)
+      };
+    }
     const snapshot = makeSnapshot(stock);
     const persistence = await saveSnapshot(snapshot).catch((error) => {
       console.error('Could not save TSN Stock snapshot:', error.message);
@@ -438,6 +571,10 @@ const server = http.createServer((req, res) => {
     return sendJson(res, 200, {
       ok: true,
       service: 'tsn-stock',
+      resetEnabled: true,
+      resetRequiresKey: Boolean(RESET_KEY),
+      targetBasePrice: TARGET_BASE_PRICE,
+      autoRebaseEnabled: AUTO_REBASE_ENABLED,
       persistence: PERSISTENCE_ENABLED ? 'mongodb-uri' : 'memory',
       tsnApiConfigured: Boolean(TSN_API_BASE_URL)
     });
@@ -465,13 +602,30 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+
+  if (urlPath === '/api/reset') {
+    if (req.method !== 'POST') {
+      return sendJson(res, 405, { ok: false, error: 'Use POST to reset TSN Stock.' });
+    }
+    if (!resetAllowed(req, url)) {
+      return sendJson(res, 401, { ok: false, error: 'Reset key is missing or wrong.' });
+    }
+    resetStockHistory()
+      .then((payload) => sendJson(res, 200, { ...payload, reset: true }))
+      .catch((error) => sendJson(res, 500, { ok: false, error: error.message }));
+    return;
+  }
+
   if (urlPath === '/config.js') {
     return send(
       res,
       200,
       `window.TSN_STOCK_CONFIG = ${JSON.stringify({
         refreshIntervalMs: REFRESH_INTERVAL_MS,
-        persistenceEnabled: PERSISTENCE_ENABLED
+        persistenceEnabled: PERSISTENCE_ENABLED,
+        resetRequiresKey: Boolean(RESET_KEY),
+        targetBasePrice: TARGET_BASE_PRICE,
+        autoRebaseEnabled: AUTO_REBASE_ENABLED
       })};`,
       'application/javascript; charset=utf-8'
     );
