@@ -1,0 +1,13 @@
+Before uploading to GitHub, open package.json.
+
+The FIRST character must be:
+{
+
+If package.json starts with PORT=3010 or TSN_API_BASE_URL, it is WRONG.
+Do not paste environment variables into package.json.
+Put them only in Render -> Environment.
+
+Render settings:
+Build Command: npm install --omit=dev --no-audit --no-fund
+Start Command: npm start
+Root Directory: leave empty if these files are in the repo root.
