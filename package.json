@@ -1,7 +1,7 @@
 {
   "name": "tsn-stock-standalone",
-  "version": "1.2.5",
-  "description": "Standalone TSN Stock website with MongoDB-backed TSN Stock with 100-base rebalancing, instant updates, chart history, and reset button.",
+  "version": "1.2.1",
+  "description": "Standalone TSN Stock website with MongoDB-backed standalone price engine and chart history.",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",

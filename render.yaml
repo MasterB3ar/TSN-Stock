@@ -23,16 +23,6 @@ services:
       - key: MONGODB_COLLECTION
         value: stockSnapshots
       - key: TSN_STOCK_REFRESH_MS
-        value: "2000"
+        value: "20000"
       - key: TSN_STOCK_MAX_HISTORY
         value: "720"
-      - key: TSN_STOCK_RESET_KEY
-        sync: false
-      - key: TSN_STOCK_RESET_PRICE
-        value: "100"
-      - key: TSN_STOCK_TARGET_BASE_PRICE
-        value: "100"
-      - key: TSN_STOCK_AUTO_REBASE
-        value: "true"
-      - key: TSN_STOCK_AUTO_REBASE_THRESHOLD
-        value: "1.8"

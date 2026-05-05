@@ -93,20 +93,13 @@ h2 { margin-bottom: 10px; }
 
 .chart-card { padding: 22px; }
 .section-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 12px; }
-.chart-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.secondary, .danger-button {
+.secondary {
   border: 1px solid var(--border);
   color: var(--text);
   background: rgba(255, 255, 255, 0.07);
   border-radius: 14px;
   padding: 10px 14px;
 }
-.danger-button {
-  border-color: rgba(255, 107, 107, 0.42);
-  color: #ffd6d6;
-  background: rgba(255, 107, 107, 0.12);
-}
-.danger-button:hover { background: rgba(255, 107, 107, 0.20); }
 canvas { display: block; width: 100%; height: min(360px, 42vh); }
 
 .metrics-grid {

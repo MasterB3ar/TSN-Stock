@@ -1,5 +1,5 @@
 const config = window.TSN_STOCK_CONFIG || {};
-const REFRESH_INTERVAL_MS = Number(config.refreshIntervalMs || 2_000);
+const REFRESH_INTERVAL_MS = Number(config.refreshIntervalMs || 20_000);
 
 const state = {
   stock: null,
@@ -321,7 +321,7 @@ function renderStock(stock) {
   change.textContent = `${formatSigned(stock.change)} · ${Number(stock.changePercent || 0) > 0 ? '+' : ''}${formatNumber(stock.changePercent)}%`;
   $('#updatedAt').textContent = `Opdateret ${formatTime(stock.updatedAt)}`;
   $('#stockDisclaimer').textContent = stock.disclaimer || 'Fiktiv TSN-aktivitetspris. Ikke en rigtig aktie.';
-  $('#refreshInfo').textContent = `Tjekker for ændringer hvert ${Math.max(1, Math.round(REFRESH_INTERVAL_MS / 1000))}. sekund og opdaterer ved selv små ændringer`;
+  $('#refreshInfo').textContent = `Opdaterer automatisk hvert ${Math.round(REFRESH_INTERVAL_MS / 1000)}. sekund`;
   const persistenceInfo = $('#persistenceInfo');
   if (persistenceInfo) {
     const persistence = stock.persistence || {};
@@ -356,7 +356,7 @@ async function fetchStock({ manual = false } = {}) {
   if (manual) setStatus('Opdaterer...', '');
 
   try {
-    const url = '/api/stock?force=1';
+    const url = manual ? '/api/stock?force=1' : '/api/stock';
     const response = await fetchWithTimeout(url, { cache: 'no-store' }, 12000);
     const data = await response.json().catch(() => ({}));
     if (!response.ok || !data.ok) {
@@ -375,33 +375,6 @@ async function fetchStock({ manual = false } = {}) {
   }
 }
 
-
-async function resetStock() {
-  const sure = window.confirm('Vil du nulstille TSN Stock? Dette sletter den gemte grafhistorik og starter prisen fra reset-niveauet igen.');
-  if (!sure) return;
-
-  let headers = {};
-  if (config.resetRequiresKey) {
-    const key = window.prompt('Indtast TSN Stock reset key:');
-    if (!key) return;
-    headers['X-Reset-Key'] = key;
-  }
-
-  setStatus('Nulstiller...', '');
-  const response = await fetchWithTimeout('/api/reset', {
-    method: 'POST',
-    headers,
-    cache: 'no-store'
-  }, 12000);
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok || !data.ok) {
-    throw new Error(data.error || `Reset fejlede (${response.status})`);
-  }
-  renderStock(data.stock);
-  setStatus('Nulstillet', 'connected');
-  await fetchStock({ manual: true });
-}
-
 function startAutoRefresh() {
   clearInterval(state.timer);
   state.timer = setInterval(() => {
@@ -415,12 +388,6 @@ function startAutoRefresh() {
 $('#refreshButton')?.addEventListener('click', () => fetchStock({ manual: true }).catch((error) => {
   setStatus('Kunne ikke opdatere', 'error');
   console.error(error);
-}));
-
-$('#resetButton')?.addEventListener('click', () => resetStock().catch((error) => {
-  setStatus('Kunne ikke nulstille', 'error');
-  console.error(error);
-  alert(error.message || 'Kunne ikke nulstille TSN Stock.');
 }));
 
 $('#stockChart')?.addEventListener('mousemove', handleChartPointer);
