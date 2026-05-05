@@ -101,7 +101,7 @@ Optional:
 MONGODB_DATABASE=tsn_stock
 MONGODB_COLLECTION=stockSnapshots
 TSN_STOCK_REFRESH_MS=2000
-TSN_STOCK_MAX_HISTORY=720
+TSN_STOCK_MAX_HISTORY=302400
 TSN_STOCK_RESET_KEY=optional-secret-key
 TSN_STOCK_RESET_PRICE=100
 TSN_STOCK_TARGET_BASE_PRICE=100
@@ -113,7 +113,7 @@ MONGODB_WALLET_COLLECTION=tsnMoneyWallets
 MONGODB_TRADE_COLLECTION=tsnMoneyTrades
 ```
 
-`TSN_STOCK_MAX_HISTORY=720` means about 24 minutes of 2-second snapshots if activity constantly changes. Increase it if you want a longer chart, for example `TSN_STOCK_MAX_HISTORY=10800` for about 6 hours.
+`TSN_STOCK_MAX_HISTORY=302400` means about 24 minutes of 2-second snapshots if activity constantly changes. Increase it if you want a longer chart, for example `TSN_STOCK_MAX_HISTORY=10800` for about 6 hours.
 
 `TSN_STOCK_TARGET_BASE_PRICE=100` keeps the stock centered around 100. If your old MongoDB history is already around 500, `TSN_STOCK_AUTO_REBASE=true` automatically scales the saved history down the first time the app runs after deployment.
 
@@ -291,12 +291,13 @@ Optional env vars:
 
 ```env
 TSN_STOCK_HISTORY_API_MAX_POINTS=1400
-TSN_STOCK_MAX_HISTORY=720
+TSN_STOCK_MAX_HISTORY=302400
+TSN_STOCK_PAYLOAD_HISTORY_POINTS=720
 ```
 
 `TSN_STOCK_HISTORY_API_MAX_POINTS` controls how many points the graph API returns after downsampling. For long periods like 1 day or 7 days, the server down-samples the saved MongoDB history so the browser stays fast.
 
-`TSN_STOCK_MAX_HISTORY` still controls how much history is loaded for the internal pricing engine. The chart API can query longer stored MongoDB history by range, but old points must still exist in your MongoDB collection.
+`TSN_STOCK_MAX_HISTORY` controls how many saved MongoDB snapshots the app can keep/load. At the default 2-second refresh, `302400` is about 7 days. The graph API then downsamples that history so long ranges do not lag the browser.
 
 
 ## Login fix / original TSN account login

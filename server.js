@@ -40,7 +40,8 @@ const WALLET_COLLECTION = String(process.env.MONGODB_WALLET_COLLECTION || 'tsnMo
 const TRADE_COLLECTION = String(process.env.MONGODB_TRADE_COLLECTION || 'tsnMoneyTrades');
 const TSNM_EARN_PER_MINUTE = Number(process.env.TSNM_EARN_PER_MINUTE || 10);
 const TSNM_MAX_REWARD_MINUTES_PER_TICK = Number(process.env.TSNM_MAX_REWARD_MINUTES_PER_TICK || 30);
-const MAX_HISTORY_POINTS = Number(process.env.TSN_STOCK_MAX_HISTORY || 720);
+const MAX_HISTORY_POINTS = Number(process.env.TSN_STOCK_MAX_HISTORY || 302400); // 7 days at 2-second snapshots
+const STOCK_PAYLOAD_HISTORY_POINTS = Number(process.env.TSN_STOCK_PAYLOAD_HISTORY_POINTS || 720);
 const HISTORY_API_MAX_POINTS = Number(process.env.TSN_STOCK_HISTORY_API_MAX_POINTS || 1400);
 const REFRESH_INTERVAL_MS = Number(process.env.TSN_STOCK_REFRESH_MS || 2000);
 const RESET_KEY = String(process.env.TSN_STOCK_RESET_KEY || '');
@@ -921,8 +922,9 @@ function downsampleHistory(points, maxPoints = HISTORY_API_MAX_POINTS) {
   return sampled;
 }
 
-function cleanHistory(documents) {
-  return (documents || [])
+function cleanHistory(documents, options = {}) {
+  const limit = Number(options.limit || MAX_HISTORY_POINTS);
+  const cleaned = (documents || [])
     .map((doc) => ({
       price: Number(doc.price) || 0,
       change: Number(doc.change) || 0,
@@ -932,8 +934,8 @@ function cleanHistory(documents) {
       createdAt: doc.createdAt || doc.sourceUpdatedAt || new Date().toISOString()
     }))
     .filter((point) => Number.isFinite(point.price) && point.price > 0)
-    .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt))
-    .slice(-MAX_HISTORY_POINTS);
+    .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+  return limit > 0 ? cleaned.slice(-limit) : cleaned;
 }
 
 async function loadHistory(options = {}) {
@@ -945,7 +947,7 @@ async function loadHistory(options = {}) {
     const filtered = sinceIso
       ? memoryHistory.filter((point) => String(point.createdAt || point.sourceUpdatedAt || '') >= sinceIso)
       : memoryHistory;
-    return cleanHistory(filtered).slice(-limit);
+    return cleanHistory(filtered, { limit });
   }
 
   const collection = await getMongoCollection();
@@ -966,7 +968,7 @@ async function loadHistory(options = {}) {
     .sort({ createdAt: -1 })
     .limit(limit)
     .toArray();
-  return cleanHistory(documents);
+  return cleanHistory(documents, { limit });
 }
 async function rebaseHistoryIfNeeded(history) {
   const clean = cleanHistory(history);
@@ -1005,7 +1007,7 @@ async function rebaseHistoryIfNeeded(history) {
     }
     cachedPayload = null;
     cachedAt = 0;
-    return { history: await loadHistory(), rebased: true, factor };
+    return { history: await loadHistory({ limit: MAX_HISTORY_POINTS }), rebased: true, factor };
   }
 
   memoryHistory = clean.map((point) => ({
@@ -1020,7 +1022,7 @@ async function rebaseHistoryIfNeeded(history) {
 async function saveSnapshot(snapshot) {
   if (!PERSISTENCE_ENABLED) {
     memoryHistory.push(snapshot);
-    memoryHistory = cleanHistory(memoryHistory);
+    memoryHistory = cleanHistory(memoryHistory, { limit: MAX_HISTORY_POINTS });
     return { saved: false, mode: 'memory' };
   }
   const collection = await getMongoCollection();
@@ -1060,7 +1062,7 @@ async function resetStockHistory() {
   const persistence = await saveSnapshot(resetSnapshot).catch((error) => {
     console.error('Could not save reset snapshot:', error.message);
     memoryHistory.push(resetSnapshot);
-    memoryHistory = cleanHistory(memoryHistory);
+    memoryHistory = cleanHistory(memoryHistory, { limit: MAX_HISTORY_POINTS });
     return { saved: false, mode: 'memory-fallback' };
   });
 
@@ -1113,7 +1115,7 @@ function buildPayload(stock, history, persistence, source = 'live') {
     stock: {
       ...stock,
       updatedAt,
-      history: clean.slice(-MAX_HISTORY_POINTS).map((point) => ({
+      history: clean.slice(-STOCK_PAYLOAD_HISTORY_POINTS).map((point) => ({
         price: Number(point.price) || 0,
         createdAt: point.createdAt
       })),
@@ -1157,7 +1159,7 @@ async function getStockPayload({ force = false } = {}) {
     const persistence = await saveSnapshot(snapshot).catch((error) => {
       console.error('Could not save TSN Stock snapshot:', error.message);
       memoryHistory.push(snapshot);
-      memoryHistory = cleanHistory(memoryHistory);
+      memoryHistory = cleanHistory(memoryHistory, { limit: MAX_HISTORY_POINTS });
       return { saved: false, mode: 'memory-fallback' };
     });
     const history = await loadHistory().catch((error) => {
@@ -1299,9 +1301,12 @@ const server = http.createServer((req, res) => {
     const range = url.searchParams.get('range') || '10m';
     const sinceMs = historyRangeToMs(range);
     const limit = Math.min(Number(url.searchParams.get('limit') || HISTORY_API_MAX_POINTS), HISTORY_API_MAX_POINTS * 2);
+    const estimatedRangePoints = sinceMs
+      ? Math.ceil(sinceMs / Math.max(1000, REFRESH_INTERVAL_MS)) + 60
+      : MAX_HISTORY_POINTS;
     const queryLimit = sinceMs
-      ? Math.min(Math.max(limit * 50, 5000), 100000)
-      : Math.min(Math.max(MAX_HISTORY_POINTS * 10, limit * 10), 100000);
+      ? Math.min(Math.max(estimatedRangePoints, limit * 5, 5000), MAX_HISTORY_POINTS)
+      : Math.min(Math.max(MAX_HISTORY_POINTS, limit * 10), MAX_HISTORY_POINTS);
     loadHistory({ sinceMs: sinceMs || 0, limit: queryLimit })
       .then((history) => {
         const points = downsampleHistory(history, limit);
@@ -1350,7 +1355,9 @@ const server = http.createServer((req, res) => {
         targetBasePrice: TARGET_BASE_PRICE,
         autoRebaseEnabled: AUTO_REBASE_ENABLED,
         tsnmEarnPerMinute: TSNM_EARN_PER_MINUTE,
-        historyApiMaxPoints: HISTORY_API_MAX_POINTS
+        historyApiMaxPoints: HISTORY_API_MAX_POINTS,
+        storedHistoryPoints: MAX_HISTORY_POINTS,
+        stockPayloadHistoryPoints: STOCK_PAYLOAD_HISTORY_POINTS
       })};`,
       'application/javascript; charset=utf-8'
     );

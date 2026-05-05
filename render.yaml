@@ -25,7 +25,7 @@ services:
       - key: TSN_STOCK_REFRESH_MS
         value: "2000"
       - key: TSN_STOCK_MAX_HISTORY
-        value: "720"
+        value: "302400"
       - key: TSN_STOCK_RESET_KEY
         sync: false
       - key: TSN_STOCK_RESET_PRICE
