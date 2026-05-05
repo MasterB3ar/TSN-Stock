@@ -618,6 +618,87 @@ async function tradeStock({ playerId, playerName, type, quantity }) {
   return { wallet, trade, price };
 }
 
+
+function asArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function countSince(items, sinceMs, predicate = null) {
+  return asArray(items).filter((item) => {
+    const createdAt = new Date(item?.createdAt || item?.updatedAt || 0).getTime();
+    if (!Number.isFinite(createdAt) || createdAt < sinceMs) return false;
+    return predicate ? predicate(item) : true;
+  }).length;
+}
+
+function getRecentActiveUserCount(state, sinceMs) {
+  const activeIds = new Set();
+  asArray(state.globalMessages).forEach((message) => {
+    const postTime = new Date(message?.createdAt || 0).getTime();
+    if (Number.isFinite(postTime) && postTime >= sinceMs && message.authorId) activeIds.add(String(message.authorId));
+    asArray(message?.comments).forEach((comment) => {
+      const commentTime = new Date(comment?.createdAt || 0).getTime();
+      if (Number.isFinite(commentTime) && commentTime >= sinceMs && comment.authorId) activeIds.add(String(comment.authorId));
+    });
+  });
+  asArray(state.messages).forEach((message) => {
+    const time = new Date(message?.createdAt || 0).getTime();
+    if (Number.isFinite(time) && time >= sinceMs) {
+      if (message.from) activeIds.add(String(message.from));
+      if (message.to) activeIds.add(String(message.to));
+    }
+  });
+  return activeIds.size;
+}
+
+async function fetchOriginalStockFromMongo() {
+  const state = await readOriginalTsnState();
+  const now = new Date();
+  const nowMs = now.getTime();
+  const hourAgoMs = nowMs - 60 * 60 * 1000;
+  const recentActiveMs = nowMs - 5 * 60 * 1000;
+  const users = asArray(state.users).filter((user) => !isOriginalUserBanned(user));
+  const usersTotal = Math.max(1, users.length);
+  const privateMessagesPerHour = countSince(state.messages, hourAgoMs);
+  const globalCommentsPerHour = asArray(state.globalMessages).reduce((total, message) => total + countSince(message?.comments, hourAgoMs), 0);
+  const messagesPerHour = privateMessagesPerHour + globalCommentsPerHour;
+  const postsPerHour = countSince(state.globalMessages, hourAgoMs);
+  const onlineUsers = getRecentActiveUserCount(state, recentActiveMs);
+  const expected = hourActivityCurve(now.getHours());
+  const expectedOnline = Math.max(1, usersTotal * expected.online);
+  const expectedMessagesPerHour = Math.max(1, usersTotal * 3.2 * expected.messages);
+  const expectedPostsPerHour = Math.max(1, usersTotal * 0.9 * expected.posts);
+  const onlineRatio = onlineUsers / expectedOnline;
+  const messageRatio = messagesPerHour / expectedMessagesPerHour;
+  const postRatio = postsPerHour / expectedPostsPerHour;
+  const activityScore = Math.max(0, onlineRatio * 0.45 + messageRatio * 0.30 + postRatio * 0.25);
+  return {
+    symbol: 'TSN',
+    name: 'TSN Stock',
+    price: TARGET_BASE_PRICE,
+    change: 0,
+    changePercent: 0,
+    trend: 'flat',
+    updatedAt: now.toISOString(),
+    metrics: {
+      onlineUsers,
+      usersTotal,
+      messagesPerHour,
+      privateMessagesPerHour,
+      globalCommentsPerHour,
+      postsPerHour,
+      hour: now.getHours(),
+      expectedOnline: Number(expectedOnline.toFixed(2)),
+      expectedMessagesPerHour: Number(expectedMessagesPerHour.toFixed(2)),
+      expectedPostsPerHour: Number(expectedPostsPerHour.toFixed(2)),
+      activityScore: Number(activityScore.toFixed(3)),
+      source: 'original-tsn-mongodb-fallback',
+      onlineUsersMode: 'recent-active-5-minutes'
+    },
+    disclaimer: 'Fiktiv TSN-aktivitetspris. Aktivitet hentet direkte fra original TSN MongoDB.'
+  };
+}
+
 function normalizeSourceStock(data) {
   const stock = data?.stock || data;
   if (!stock || typeof stock !== 'object') throw new Error('Original TSN API did not return stock data');
@@ -784,7 +865,7 @@ function calculateStandalonePrice(sourceStock, history) {
         changedSinceLastSnapshot: false,
         heldBecauseMetricsUnchanged: true
       },
-      pricingEngine: 'event-driven-balanced-up-down-v7'
+      pricingEngine: 'event-driven-balanced-up-down-v8-robust-tsn-connection'
     };
   }
 
@@ -889,7 +970,7 @@ function calculateStandalonePrice(sourceStock, history) {
       metricDeltas: deltas,
       changedSinceLastSnapshot: deltas.changed
     },
-    pricingEngine: 'event-driven-balanced-up-down-v7'
+    pricingEngine: 'event-driven-balanced-up-down-v8-robust-tsn-connection'
   };
 }
 
@@ -1091,13 +1172,33 @@ function resetAllowed(req, url) {
 }
 
 async function fetchOriginalStock() {
-  if (!TSN_API_BASE_URL) {
-    const error = new Error('Missing TSN_API_BASE_URL');
-    error.statusCode = 428;
-    throw error;
+  const errors = [];
+
+  if (TSN_API_BASE_URL) {
+    try {
+      const data = await fetchJsonWithTimeout(`${TSN_API_BASE_URL}/api/public/stock`, { cache: 'no-store' }, 12000);
+      return { ...normalizeSourceStock(data), connectionSource: 'original-tsn-api' };
+    } catch (error) {
+      errors.push(`API ${TSN_API_BASE_URL}/api/public/stock failed: ${error.message}`);
+    }
+  } else {
+    errors.push('TSN_API_BASE_URL is missing');
   }
-  const data = await fetchJsonWithTimeout(`${TSN_API_BASE_URL}/api/public/stock`, { cache: 'no-store' }, 12000);
-  return normalizeSourceStock(data);
+
+  if (ORIGINAL_TSN_MONGODB_URI && MongoClient) {
+    try {
+      return { ...normalizeSourceStock(await fetchOriginalStockFromMongo()), connectionSource: 'original-tsn-mongodb' };
+    } catch (error) {
+      errors.push(`MongoDB fallback failed: ${error.message}`);
+    }
+  } else {
+    errors.push('TSN_ORIGINAL_MONGODB_URI fallback is not configured');
+  }
+
+  const error = new Error(`Could not connect to original TSN. ${errors.join(' | ')}`);
+  error.statusCode = 502;
+  error.connectionErrors = errors;
+  throw error;
 }
 
 function buildPayload(stock, history, persistence, source = 'live') {
@@ -1231,13 +1332,41 @@ const server = http.createServer((req, res) => {
     return sendJson(res, 200, { ok: true, logout: true });
   }
 
+  if (urlPath === '/api/source-test') {
+    Promise.allSettled([
+      TSN_API_BASE_URL
+        ? fetchJsonWithTimeout(`${TSN_API_BASE_URL}/api/public/stock`, { cache: 'no-store' }, 12000)
+        : Promise.reject(new Error('TSN_API_BASE_URL is missing')),
+      ORIGINAL_TSN_MONGODB_URI && MongoClient
+        ? fetchOriginalStockFromMongo()
+        : Promise.reject(new Error('TSN_ORIGINAL_MONGODB_URI fallback is not configured'))
+    ]).then(([apiResult, mongoResult]) => sendJson(res, 200, {
+      ok: apiResult.status === 'fulfilled' || mongoResult.status === 'fulfilled',
+      api: {
+        configured: Boolean(TSN_API_BASE_URL),
+        url: TSN_API_BASE_URL ? `${TSN_API_BASE_URL}/api/public/stock` : null,
+        ok: apiResult.status === 'fulfilled',
+        error: apiResult.status === 'rejected' ? apiResult.reason.message : null
+      },
+      mongodbFallback: {
+        configured: Boolean(ORIGINAL_TSN_MONGODB_URI),
+        database: ORIGINAL_TSN_DATABASE,
+        collection: ORIGINAL_TSN_STATE_COLLECTION,
+        ok: mongoResult.status === 'fulfilled',
+        error: mongoResult.status === 'rejected' ? mongoResult.reason.message : null,
+        metrics: mongoResult.status === 'fulfilled' ? mongoResult.value.metrics : null
+      }
+    })).catch((error) => sendJson(res, 500, { ok: false, error: error.message }));
+    return;
+  }
+
   if (urlPath === '/api/stock') {
     getStockPayload({ force: url.searchParams.get('force') === '1' })
       .then((payload) => sendJson(res, 200, payload))
       .catch((error) => sendJson(res, error.statusCode || 500, {
         ok: false,
         error: error.message,
-        needs: !TSN_API_BASE_URL ? ['TSN_API_BASE_URL'] : []
+        needs: !TSN_API_BASE_URL && !ORIGINAL_TSN_MONGODB_URI ? ['TSN_API_BASE_URL or TSN_ORIGINAL_MONGODB_URI'] : []
       }));
     return;
   }
