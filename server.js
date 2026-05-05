@@ -22,6 +22,7 @@ const TRADE_COLLECTION = String(process.env.MONGODB_TRADE_COLLECTION || 'tsnMone
 const TSNM_EARN_PER_MINUTE = Number(process.env.TSNM_EARN_PER_MINUTE || 10);
 const TSNM_MAX_REWARD_MINUTES_PER_TICK = Number(process.env.TSNM_MAX_REWARD_MINUTES_PER_TICK || 30);
 const MAX_HISTORY_POINTS = Number(process.env.TSN_STOCK_MAX_HISTORY || 720);
+const HISTORY_API_MAX_POINTS = Number(process.env.TSN_STOCK_HISTORY_API_MAX_POINTS || 1400);
 const REFRESH_INTERVAL_MS = Number(process.env.TSN_STOCK_REFRESH_MS || 2000);
 const RESET_KEY = String(process.env.TSN_STOCK_RESET_KEY || '');
 const RESET_BASE_PRICE = Number(process.env.TSN_STOCK_RESET_PRICE || 100);
@@ -100,6 +101,69 @@ async function fetchJsonWithTimeout(url, options = {}, timeoutMs = 12000) {
   } finally {
     clearTimeout(timeout);
   }
+}
+
+
+function getBearerToken(req) {
+  const header = req.headers.authorization || '';
+  return header.startsWith('Bearer ') ? header.slice(7).trim() : '';
+}
+
+function publicTsnUser(user) {
+  return {
+    id: String(user?.id || ''),
+    username: String(user?.username || user?.name || 'tsn-user'),
+    name: String(user?.name || user?.username || 'TSN User'),
+    role: user?.role || 'user',
+    isAdmin: Boolean(user?.isAdmin || user?.role === 'admin')
+  };
+}
+
+async function proxyTsnLogin(username, password) {
+  if (!TSN_API_BASE_URL) {
+    const error = new Error('TSN_API_BASE_URL is missing. TSN-S needs the original TSN URL to log users in.');
+    error.statusCode = 500;
+    throw error;
+  }
+  const data = await fetchJsonWithTimeout(`${TSN_API_BASE_URL}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, login: username, password })
+  }, 12000);
+  if (!data?.token || !data?.user) {
+    const error = new Error('Original TSN login did not return a valid session.');
+    error.statusCode = 502;
+    throw error;
+  }
+  return { token: data.token, user: publicTsnUser(data.user) };
+}
+
+async function getTsnSession(req) {
+  if (!TSN_API_BASE_URL) {
+    const error = new Error('TSN_API_BASE_URL is missing.');
+    error.statusCode = 500;
+    throw error;
+  }
+  const token = getBearerToken(req);
+  if (!token) {
+    const error = new Error('Du skal logge ind med din originale TSN-konto.');
+    error.statusCode = 401;
+    throw error;
+  }
+  const data = await fetchJsonWithTimeout(`${TSN_API_BASE_URL}/api/me`, {
+    headers: { Authorization: `Bearer ${token}` }
+  }, 12000);
+  if (!data?.user) {
+    const error = new Error('Din TSN-session kunne ikke bekræftes. Log ind igen.');
+    error.statusCode = 401;
+    throw error;
+  }
+  return { token, user: publicTsnUser(data.user) };
+}
+
+async function walletForRequest(req) {
+  const session = await getTsnSession(req);
+  return { playerId: session.user.id, playerName: session.user.name || session.user.username, user: session.user };
 }
 
 async function getMongoCollection() {
@@ -620,6 +684,35 @@ function calculateStandalonePrice(sourceStock, history) {
   };
 }
 
+
+function historyRangeToMs(range) {
+  const value = String(range || '10m').toLowerCase();
+  const ranges = {
+    '10m': 10 * 60 * 1000,
+    '30m': 30 * 60 * 1000,
+    '1h': 60 * 60 * 1000,
+    '6h': 6 * 60 * 60 * 1000,
+    '1d': 24 * 60 * 60 * 1000,
+    '24h': 24 * 60 * 60 * 1000,
+    '7d': 7 * 24 * 60 * 60 * 1000
+  };
+  if (value === 'all') return null;
+  return ranges[value] || ranges['10m'];
+}
+
+function downsampleHistory(points, maxPoints = HISTORY_API_MAX_POINTS) {
+  const clean = cleanHistory(points);
+  const limit = Math.max(50, Number(maxPoints) || HISTORY_API_MAX_POINTS);
+  if (clean.length <= limit) return clean;
+
+  const sampled = [];
+  const step = (clean.length - 1) / (limit - 1);
+  for (let i = 0; i < limit; i += 1) {
+    sampled.push(clean[Math.round(i * step)]);
+  }
+  return sampled;
+}
+
 function cleanHistory(documents) {
   return (documents || [])
     .map((doc) => ({
@@ -635,11 +728,22 @@ function cleanHistory(documents) {
     .slice(-MAX_HISTORY_POINTS);
 }
 
-async function loadHistory() {
-  if (!PERSISTENCE_ENABLED) return cleanHistory(memoryHistory);
+async function loadHistory(options = {}) {
+  const sinceMs = Number(options.sinceMs || 0);
+  const limit = Number(options.limit || MAX_HISTORY_POINTS);
+  const sinceIso = sinceMs > 0 ? new Date(Date.now() - sinceMs).toISOString() : null;
+
+  if (!PERSISTENCE_ENABLED) {
+    const filtered = sinceIso
+      ? memoryHistory.filter((point) => String(point.createdAt || point.sourceUpdatedAt || '') >= sinceIso)
+      : memoryHistory;
+    return cleanHistory(filtered).slice(-limit);
+  }
+
   const collection = await getMongoCollection();
+  const query = sinceIso ? { createdAt: { $gte: sinceIso } } : {};
   const documents = await collection
-    .find({}, {
+    .find(query, {
       projection: {
         _id: 0,
         price: 1,
@@ -652,11 +756,10 @@ async function loadHistory() {
       }
     })
     .sort({ createdAt: -1 })
-    .limit(MAX_HISTORY_POINTS)
+    .limit(limit)
     .toArray();
   return cleanHistory(documents);
 }
-
 async function rebaseHistoryIfNeeded(history) {
   const clean = cleanHistory(history);
   const last = clean[clean.length - 1];
@@ -894,6 +997,28 @@ const server = http.createServer((req, res) => {
     });
   }
 
+
+  if (urlPath === '/api/auth/login') {
+    if (req.method !== 'POST') return sendJson(res, 405, { ok: false, error: 'Use POST for login.' });
+    readJsonBody(req)
+      .then((body) => proxyTsnLogin(body.username || body.login, body.password))
+      .then((session) => sendJson(res, 200, { ok: true, ...session }))
+      .catch((error) => sendJson(res, error.statusCode || 401, { ok: false, error: error.data?.error || error.message || 'Login fejlede.' }));
+    return;
+  }
+
+  if (urlPath === '/api/auth/me') {
+    if (req.method !== 'GET') return sendJson(res, 405, { ok: false, error: 'Use GET for session check.' });
+    getTsnSession(req)
+      .then((session) => sendJson(res, 200, { ok: true, user: session.user }))
+      .catch((error) => sendJson(res, error.statusCode || 401, { ok: false, error: error.data?.error || error.message || 'Ikke logget ind.', logout: true }));
+    return;
+  }
+
+  if (urlPath === '/api/auth/logout') {
+    return sendJson(res, 200, { ok: true, logout: true });
+  }
+
   if (urlPath === '/api/stock') {
     getStockPayload({ force: url.searchParams.get('force') === '1' })
       .then((payload) => sendJson(res, 200, payload))
@@ -908,61 +1033,88 @@ const server = http.createServer((req, res) => {
 
   if (urlPath === '/api/wallet') {
     if (req.method !== 'GET') return sendJson(res, 405, { ok: false, error: 'Use GET for wallet.' });
-    const playerId = url.searchParams.get('playerId') || req.headers['x-player-id'];
-    const playerName = url.searchParams.get('playerName') || req.headers['x-player-name'];
-    Promise.all([getWallet(playerId, playerName), getStockPayload({ force: false }).catch(() => null)])
-      .then(([wallet, payload]) => sendJson(res, 200, {
+    walletForRequest(req)
+      .then((identity) => Promise.all([identity, getWallet(identity.playerId, identity.playerName), getStockPayload({ force: false }).catch(() => null)]))
+      .then(([identity, wallet, payload]) => sendJson(res, 200, {
         ok: true,
+        user: identity.user,
         wallet: publicWallet(wallet, payload?.stock?.price || TARGET_BASE_PRICE),
         earnPerMinute: TSNM_EARN_PER_MINUTE,
         fictional: true
       }))
-      .catch((error) => sendJson(res, 400, { ok: false, error: error.message }));
+      .catch((error) => sendJson(res, error.statusCode || 400, { ok: false, error: error.data?.error || error.message }));
     return;
   }
 
   if (urlPath === '/api/wallet/tick') {
     if (req.method !== 'POST') return sendJson(res, 405, { ok: false, error: 'Use POST for wallet tick.' });
-    readJsonBody(req)
-      .then((body) => Promise.all([
-        rewardOnlineMinutes(body.playerId || req.headers['x-player-id'], body.playerName || req.headers['x-player-name']),
+    walletForRequest(req)
+      .then((identity) => Promise.all([
+        identity,
+        rewardOnlineMinutes(identity.playerId, identity.playerName),
         getStockPayload({ force: false }).catch(() => null)
       ]))
-      .then(([result, payload]) => sendJson(res, 200, {
+      .then(([identity, result, payload]) => sendJson(res, 200, {
         ok: true,
+        user: identity.user,
         wallet: publicWallet(result.wallet, payload?.stock?.price || TARGET_BASE_PRICE, result.reward),
         earnPerMinute: TSNM_EARN_PER_MINUTE,
         fictional: true
       }))
-      .catch((error) => sendJson(res, 400, { ok: false, error: error.message }));
+      .catch((error) => sendJson(res, error.statusCode || 400, { ok: false, error: error.data?.error || error.message }));
     return;
   }
 
   if (urlPath === '/api/trade') {
     if (req.method !== 'POST') return sendJson(res, 405, { ok: false, error: 'Use POST for trading.' });
-    readJsonBody(req)
-      .then((body) => tradeStock(body))
-      .then((result) => sendJson(res, 200, {
+    Promise.all([walletForRequest(req), readJsonBody(req)])
+      .then(([identity, body]) => tradeStock({
+        playerId: identity.playerId,
+        playerName: identity.playerName,
+        type: body.type,
+        quantity: body.quantity
+      }).then((result) => ({ identity, result })))
+      .then(({ identity, result }) => sendJson(res, 200, {
         ok: true,
+        user: identity.user,
         wallet: publicWallet(result.wallet, result.price),
         trade: result.trade,
         fictional: true
       }))
-      .catch((error) => sendJson(res, 400, { ok: false, error: error.message }));
+      .catch((error) => sendJson(res, error.statusCode || 400, { ok: false, error: error.data?.error || error.message }));
     return;
   }
 
   if (urlPath === '/api/history') {
-    loadHistory()
-      .then((history) => sendJson(res, 200, {
-        ok: true,
-        persistence: PERSISTENCE_ENABLED ? 'mongodb-uri' : 'memory',
-        history: history.map((point) => ({ price: point.price, createdAt: point.createdAt }))
-      }))
+    const range = url.searchParams.get('range') || '10m';
+    const sinceMs = historyRangeToMs(range);
+    const limit = Math.min(Number(url.searchParams.get('limit') || HISTORY_API_MAX_POINTS), HISTORY_API_MAX_POINTS * 2);
+    const queryLimit = sinceMs
+      ? Math.min(Math.max(limit * 50, 5000), 100000)
+      : Math.min(Math.max(MAX_HISTORY_POINTS * 10, limit * 10), 100000);
+    loadHistory({ sinceMs: sinceMs || 0, limit: queryLimit })
+      .then((history) => {
+        const points = downsampleHistory(history, limit);
+        sendJson(res, 200, {
+          ok: true,
+          persistence: PERSISTENCE_ENABLED ? 'mongodb-uri' : 'memory',
+          range,
+          sinceMs,
+          totalPoints: history.length,
+          pointsReturned: points.length,
+          history: points.map((point) => ({
+            price: point.price,
+            change: point.change,
+            changePercent: point.changePercent,
+            trend: point.trend,
+            metrics: point.metrics,
+            createdAt: point.createdAt
+          }))
+        });
+      })
       .catch((error) => sendJson(res, 500, { ok: false, error: error.message }));
     return;
   }
-
 
   if (urlPath === '/api/reset') {
     if (req.method !== 'POST') {
@@ -987,7 +1139,8 @@ const server = http.createServer((req, res) => {
         resetRequiresKey: Boolean(RESET_KEY),
         targetBasePrice: TARGET_BASE_PRICE,
         autoRebaseEnabled: AUTO_REBASE_ENABLED,
-        tsnmEarnPerMinute: TSNM_EARN_PER_MINUTE
+        tsnmEarnPerMinute: TSNM_EARN_PER_MINUTE,
+        historyApiMaxPoints: HISTORY_API_MAX_POINTS
       })};`,
       'application/javascript; charset=utf-8'
     );

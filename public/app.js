@@ -14,24 +14,105 @@ const state = {
   isFetching: false,
   wallet: null,
   walletTimer: null,
-  playerId: localStorage.getItem('tsnStockPlayerId') || '',
-  playerName: localStorage.getItem('tsnStockPlayerName') || ''
+  token: localStorage.getItem('tsnStockToken') || '',
+  user: null,
+  chartRange: localStorage.getItem('tsnStockChartRange') || '10m',
+  chartHistory: [],
+  chartHistoryFetchedAt: 0,
+  chartHistoryTimer: null
 };
 
 const $ = (selector) => document.querySelector(selector);
 
 
-function ensurePlayerIdentity() {
-  if (!state.playerId) {
-    const random = crypto?.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    state.playerId = `tsn_${random}`.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 80);
-    localStorage.setItem('tsnStockPlayerId', state.playerId);
+function authHeaders(extra = {}) {
+  return state.token ? { ...extra, Authorization: `Bearer ${state.token}` } : { ...extra };
+}
+
+function setAuthStatus(message = '') {
+  const authStatus = $('#authStatus');
+  if (authStatus) authStatus.textContent = message;
+}
+
+function renderAuth() {
+  const loggedIn = Boolean(state.token && state.user?.id);
+  document.body.classList.toggle('is-logged-in', loggedIn);
+  $('#authCard')?.classList.toggle('hidden', loggedIn);
+  $('#accountCard')?.classList.toggle('hidden', !loggedIn);
+  $('#moneySection')?.classList.toggle('locked', !loggedIn);
+  $('#tradeSection')?.classList.toggle('locked', !loggedIn);
+
+  const name = state.user?.name || state.user?.username || 'TSN bruger';
+  const username = state.user?.username ? `@${state.user.username}` : '';
+  const accountName = $('#accountName');
+  const accountUser = $('#accountUser');
+  if (accountName) accountName.textContent = name;
+  if (accountUser) accountUser.textContent = username || 'Original TSN konto';
+
+  const lockText = $('#walletLockText');
+  if (lockText) lockText.textContent = loggedIn
+    ? 'Wallet er forbundet til din originale TSN-konto.'
+    : 'Log ind med din originale TSN-konto for at optjene TSNM og handle.';
+}
+
+async function loginWithTsn(event) {
+  event?.preventDefault?.();
+  const username = $('#loginUsername')?.value?.trim() || '';
+  const password = $('#loginPassword')?.value || '';
+  if (!username || !password) {
+    setAuthStatus('Skriv brugernavn og adgangskode.');
+    return;
   }
-  if (!state.playerName) {
-    state.playerName = `TSN Investor ${state.playerId.slice(-4).toUpperCase()}`;
-    localStorage.setItem('tsnStockPlayerName', state.playerName);
+  setAuthStatus('Logger ind via original TSN...');
+  const response = await fetchWithTimeout('/api/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+    cache: 'no-store'
+  }, 12000);
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.ok) throw new Error(data.error || 'Login fejlede.');
+  state.token = data.token;
+  state.user = data.user;
+  localStorage.setItem('tsnStockToken', state.token);
+  setAuthStatus('Logget ind.');
+  renderAuth();
+  await fetchWallet();
+  startWalletRewards();
+}
+
+function logout() {
+  state.token = '';
+  state.user = null;
+  state.wallet = null;
+  localStorage.removeItem('tsnStockToken');
+  clearInterval(state.walletTimer);
+  renderAuth();
+  renderWallet(null);
+  setAuthStatus('Du er logget ud.');
+}
+
+async function checkSession() {
+  if (!state.token) {
+    renderAuth();
+    return false;
   }
-  return { playerId: state.playerId, playerName: state.playerName };
+  try {
+    const response = await fetchWithTimeout('/api/auth/me', {
+      headers: authHeaders(),
+      cache: 'no-store'
+    }, 12000);
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.ok) throw new Error(data.error || 'Session udløbet.');
+    state.user = data.user;
+    renderAuth();
+    return true;
+  } catch (error) {
+    console.warn(error);
+    logout();
+    setAuthStatus('Sessionen udløb. Log ind igen.');
+    return false;
+  }
 }
 
 function formatTsnm(value) {
@@ -78,17 +159,41 @@ function setStatus(text, mode = '') {
   el.className = `status-pill ${mode}`.trim();
 }
 
-function normalizeHistory(stock) {
-  const raw = Array.isArray(stock?.history) && stock.history.length
-    ? stock.history
-    : [{ price: stock?.price, createdAt: stock?.updatedAt }];
+function rangeToMs(range) {
+  const ranges = {
+    '10m': 10 * 60 * 1000,
+    '30m': 30 * 60 * 1000,
+    '1h': 60 * 60 * 1000,
+    '6h': 6 * 60 * 60 * 1000,
+    '1d': 24 * 60 * 60 * 1000,
+    '7d': 7 * 24 * 60 * 60 * 1000
+  };
+  return range === 'all' ? null : (ranges[range] || ranges['10m']);
+}
 
-  const clean = raw
+function filterHistoryByRange(points, range) {
+  const ms = rangeToMs(range);
+  const clean = (points || [])
     .map((point) => ({
       price: Number(point.price) || 0,
-      createdAt: point.createdAt || point.updatedAt || stock?.updatedAt || new Date().toISOString()
+      createdAt: point.createdAt || point.updatedAt || new Date().toISOString()
     }))
-    .filter((point) => Number.isFinite(point.price));
+    .filter((point) => Number.isFinite(point.price) && point.price > 0)
+    .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+
+  if (!ms) return clean;
+  const cutoff = Date.now() - ms;
+  return clean.filter((point) => new Date(point.createdAt).getTime() >= cutoff);
+}
+
+function normalizeHistory(stock) {
+  const raw = Array.isArray(state.chartHistory) && state.chartHistory.length
+    ? state.chartHistory
+    : (Array.isArray(stock?.history) && stock.history.length
+      ? stock.history
+      : [{ price: stock?.price, createdAt: stock?.updatedAt }]);
+
+  const clean = filterHistoryByRange(raw, state.chartRange);
 
   const current = {
     price: Number(stock?.price) || 0,
@@ -96,11 +201,25 @@ function normalizeHistory(stock) {
   };
 
   const last = clean[clean.length - 1];
-  if (!last || Math.abs(last.price - current.price) > 0.0001 || last.createdAt !== current.createdAt) {
+  const currentTime = new Date(current.createdAt).getTime();
+  const rangeMs = rangeToMs(state.chartRange);
+  const insideSelectedRange = !rangeMs || currentTime >= Date.now() - rangeMs;
+  if (insideSelectedRange && (!last || Math.abs(last.price - current.price) > 0.0001 || last.createdAt !== current.createdAt)) {
     clean.push(current);
   }
 
-  return clean.slice(-160);
+  return clean.length ? clean : [current];
+}
+
+function updateRangeButtons() {
+  document.querySelectorAll('[data-chart-range]').forEach((button) => {
+    button.classList.toggle('active', button.dataset.chartRange === state.chartRange);
+  });
+  const label = $('#chartRangeLabel');
+  if (label) {
+    const names = { '10m': '10 minutter', '30m': '30 minutter', '1h': '1 time', '6h': '6 timer', '1d': '1 dag', '7d': '7 dage', all: 'alt' };
+    label.textContent = `Viser: ${names[state.chartRange] || state.chartRange}`;
+  }
 }
 
 function drawChart(stock) {
@@ -335,7 +454,13 @@ function handleChartPointer(event) {
 
 function renderWallet(wallet) {
   state.wallet = wallet;
-  if (!wallet) return;
+  if (!wallet) {
+    $('#tsnmBalance').textContent = '0,00 TSNM';
+    $('#tsnShares').textContent = '0';
+    $('#portfolioValue').textContent = '0,00 TSNM';
+    $('#netWorth').textContent = '0,00 TSNM';
+    return;
+  }
   $('#tsnmBalance').textContent = formatTsnm(wallet.balance || 0);
   $('#tsnShares').textContent = formatNumber(wallet.shares || 0, 3);
   $('#portfolioValue').textContent = formatTsnm(wallet.portfolioValue || 0);
@@ -362,9 +487,8 @@ function updateTradeEstimate() {
 }
 
 async function fetchWallet() {
-  const identity = ensurePlayerIdentity();
-  const params = new URLSearchParams(identity);
-  const response = await fetchWithTimeout(`/api/wallet?${params}`, { cache: 'no-store' }, 10000);
+  if (!state.token) return;
+  const response = await fetchWithTimeout('/api/wallet', { headers: authHeaders(), cache: 'no-store' }, 10000);
   const data = await response.json().catch(() => ({}));
   if (!response.ok || !data.ok) throw new Error(data.error || 'Kunne ikke hente TSNM wallet');
   renderWallet(data.wallet);
@@ -372,11 +496,11 @@ async function fetchWallet() {
 }
 
 async function tickWallet() {
-  const identity = ensurePlayerIdentity();
+  if (!state.token) return;
   const response = await fetchWithTimeout('/api/wallet/tick', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(identity),
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({}),
     cache: 'no-store'
   }, 10000);
   const data = await response.json().catch(() => ({}));
@@ -385,7 +509,11 @@ async function tickWallet() {
 }
 
 async function trade(type) {
-  const identity = ensurePlayerIdentity();
+  if (!state.token) {
+    const status = $('#tradeStatus');
+    if (status) status.textContent = 'Log ind med din TSN-konto først.';
+    return;
+  }
   const quantity = Number($('#tradeQuantity')?.value || 0);
   const status = $('#tradeStatus');
   if (!quantity || quantity <= 0) {
@@ -396,8 +524,8 @@ async function trade(type) {
 
   const response = await fetchWithTimeout('/api/trade', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ...identity, type, quantity }),
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ type, quantity }),
     cache: 'no-store'
   }, 12000);
   const data = await response.json().catch(() => ({}));
@@ -411,6 +539,7 @@ async function trade(type) {
 
 function startWalletRewards() {
   clearInterval(state.walletTimer);
+  if (!state.token) return;
   tickWallet().catch((error) => console.error(error));
   state.walletTimer = setInterval(() => {
     tickWallet().catch((error) => console.error(error));
@@ -458,6 +587,19 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
   }
 }
 
+async function fetchChartHistory({ force = false } = {}) {
+  const now = Date.now();
+  if (!force && state.chartHistoryFetchedAt && now - state.chartHistoryFetchedAt < 20_000) return;
+  const maxPoints = Number(config.historyApiMaxPoints || 1400);
+  const response = await fetchWithTimeout(`/api/history?range=${encodeURIComponent(state.chartRange)}&limit=${maxPoints}`, { cache: 'no-store' }, 12000);
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.ok) throw new Error(data.error || 'Kunne ikke hente grafhistorik');
+  state.chartHistory = Array.isArray(data.history) ? data.history : [];
+  state.chartHistoryFetchedAt = now;
+  updateRangeButtons();
+  if (state.stock) drawChart(state.stock);
+}
+
 async function fetchStock({ manual = false } = {}) {
   if (state.isFetching) return;
 
@@ -475,6 +617,7 @@ async function fetchStock({ manual = false } = {}) {
       throw new Error(data.error || `TSN Stock API svarede ${response.status}`);
     }
     renderStock(data.stock);
+    fetchChartHistory({ force: manual }).catch((error) => console.error(error));
     const source = data.stock?.source === 'last-known' ? 'Seneste gemte data' : 'Live fra TSN';
     const persistent = data.stock?.persistence?.enabled ? ' + MongoDB' : '';
     setStatus(`${source}${persistent}`, data.stock?.source === 'last-known' ? '' : 'connected');
@@ -542,7 +685,19 @@ $('#sellButton')?.addEventListener('click', () => trade('sell').catch((error) =>
   if (status) status.textContent = error.message || 'Salg fejlede.';
 }));
 
+document.querySelectorAll('[data-chart-range]').forEach((button) => {
+  button.addEventListener('click', () => {
+    state.chartRange = button.dataset.chartRange || '10m';
+    localStorage.setItem('tsnStockChartRange', state.chartRange);
+    state.chartHistoryFetchedAt = 0;
+    updateRangeButtons();
+    fetchChartHistory({ force: true }).catch((error) => console.error(error));
+  });
+});
+
 $('#tradeQuantity')?.addEventListener('input', updateTradeEstimate);
+$('#loginForm')?.addEventListener('submit', (event) => loginWithTsn(event).catch((error) => setAuthStatus(error.message || 'Login fejlede.')));
+$('#logoutButton')?.addEventListener('click', logout);
 
 $('#stockChart')?.addEventListener('mousemove', handleChartPointer);
 $('#stockChart')?.addEventListener('touchmove', (event) => {
@@ -555,11 +710,17 @@ window.addEventListener('resize', () => {
   if (state.stock) drawChart(state.stock);
 });
 
-ensurePlayerIdentity();
+renderAuth();
+updateRangeButtons();
+checkSession().then((ok) => {
+  if (ok) {
+    fetchWallet().catch((error) => console.error(error));
+    startWalletRewards();
+  }
+});
 fetchStock().catch((error) => {
   console.error(error);
   setStatus('Kan ikke forbinde', 'error');
 });
-fetchWallet().catch((error) => console.error(error));
 startAutoRefresh();
-startWalletRewards();
+state.chartHistoryTimer = setInterval(() => fetchChartHistory().catch((error) => console.error(error)), 20_000);

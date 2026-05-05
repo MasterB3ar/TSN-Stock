@@ -1,6 +1,6 @@
 # TSN Stock Standalone — TSNM + MongoDB persistent stock trading
 
-This is the standalone TSN Stock website. It reads activity metrics from your original TSN website, calculates the TSN Stock price inside the standalone TSN Stock service, saves price snapshots in MongoDB, and adds **TSNM (TSN Money)**: a fictional points system where users earn 10 TSNM per online minute and can buy/sell fictional TSN Stock.
+This is the standalone TSN Stock website. It reads activity metrics from your original TSN website, calculates the TSN Stock price inside the standalone TSN Stock service, saves price snapshots in MongoDB, and adds **TSNM (TSN Money)**: a fictional points system where users log in with their original TSN account, earn 10 TSNM per online minute, and can buy/sell fictional TSN Stock.
 
 This version uses the normal MongoDB Atlas connection string:
 
@@ -19,17 +19,21 @@ MONGODB_URI=mongodb+srv://...
 - Falls back to temporary in-memory history if `MONGODB_URI` is not configured.
 - Keeps `/healthz` for uptime checks.
 - Adds a **Reset** button that clears stock history and starts the price from the reset baseline again.
-- Adds **TSNM wallets** persisted in MongoDB.
-- Users earn **10 TSNM per online minute** while the TSN Stock page is open.
+- Adds **original TSN account login/logout** inside TSN-S.
+- TSN-S verifies sessions through the original TSN `/api/auth/login` and `/api/me` endpoints.
+- Adds **TSNM wallets** persisted in MongoDB and tied to the original TSN user id.
+- Users earn **10 TSNM per online minute** while logged in and the TSN Stock page is open.
 - Users can buy and sell fictional TSN Stock with TSNM.
 - Tracks balance, shares, average buy price, portfolio value, net worth, realized/unrealized profit, and trade history.
 
 ## Original TSN requirement
 
-Your original TSN website must have this endpoint:
+Your original TSN website must have these endpoints:
 
 ```txt
 /api/public/stock
+/api/auth/login
+/api/me
 ```
 
 Example:
@@ -55,6 +59,21 @@ TSN_STOCK_MAX_PRICE_MOVE_PER_TICK=1.25
 TSN_STOCK_DOWNTURN_STRENGTH=1
 TSN_STOCK_QUIET_DECAY_PER_TICK=0.08
 ```
+
+
+## TSN-S login
+
+TSN-S does not create separate stock accounts anymore. Users log in with their original TSN account.
+
+Flow:
+
+1. User enters normal TSN username/password on TSN-S.
+2. TSN-S sends that login to the original TSN server.
+3. Original TSN returns the normal TSN token and user id.
+4. TSN-S stores the token in the browser and verifies it with `/api/me`.
+5. TSNM wallet/trades are stored under the original TSN user id.
+
+Logout only removes the TSN-S browser session. It does not delete the original TSN account.
 
 ## Render setup
 
@@ -252,3 +271,29 @@ MONGODB_TRADE_COLLECTION=tsnMoneyTrades
 ```
 
 `TSNM_MAX_REWARD_MINUTES_PER_TICK=30` prevents someone from closing the tab for days and then claiming a huge amount at once.
+
+
+## Chart time ranges
+
+The TSN-S graph now has selectable periods:
+
+- 10 minutes
+- 30 minutes
+- 1 hour
+- 6 hours
+- 1 day
+- 7 days
+- All available history
+
+The frontend asks `/api/history?range=...` for the selected period and still adds the latest live price point to the chart. The chart history is refreshed about every 20 seconds, while the stock price itself can still update faster.
+
+Optional env vars:
+
+```env
+TSN_STOCK_HISTORY_API_MAX_POINTS=1400
+TSN_STOCK_MAX_HISTORY=720
+```
+
+`TSN_STOCK_HISTORY_API_MAX_POINTS` controls how many points the graph API returns after downsampling. For long periods like 1 day or 7 days, the server down-samples the saved MongoDB history so the browser stays fast.
+
+`TSN_STOCK_MAX_HISTORY` still controls how much history is loaded for the internal pricing engine. The chart API can query longer stored MongoDB history by range, but old points must still exist in your MongoDB collection.

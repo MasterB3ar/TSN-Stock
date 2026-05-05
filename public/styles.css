@@ -309,3 +309,119 @@ code { background: rgba(255,255,255,.08); border: 1px solid var(--border); borde
     padding: 18px;
   }
 }
+
+.auth-layout {
+  display: grid;
+  grid-template-columns: minmax(320px, 1fr) minmax(260px, 0.7fr);
+  gap: 22px;
+  margin: 22px 0;
+}
+
+.auth-card,
+.account-card {
+  padding: 22px;
+}
+
+.account-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.login-form {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.login-form label {
+  color: var(--muted);
+  font-size: 0.86rem;
+  font-weight: 800;
+}
+
+.login-form input {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 12px 14px;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.07);
+  outline: none;
+}
+
+.login-form input:focus {
+  border-color: rgba(56, 217, 169, 0.48);
+  box-shadow: 0 0 0 4px rgba(56, 217, 169, 0.10);
+}
+
+.hidden { display: none !important; }
+
+.locked {
+  opacity: 0.55;
+}
+
+.locked .trade-row,
+.locked .wallet-grid {
+  pointer-events: none;
+}
+
+.is-logged-in .locked {
+  opacity: 1;
+}
+
+@media (max-width: 850px) {
+  .auth-layout,
+  .account-card {
+    grid-template-columns: 1fr;
+  }
+  .account-card {
+    align-items: stretch;
+  }
+}
+
+.range-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 8px 0 14px;
+  flex-wrap: wrap;
+}
+
+#chartRangeLabel {
+  color: var(--muted);
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.range-buttons {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.range-button {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 7px 11px;
+  color: var(--muted);
+  background: rgba(255,255,255,.055);
+  font-size: .86rem;
+  font-weight: 800;
+}
+
+.range-button:hover,
+.range-button.active {
+  color: var(--text);
+  border-color: rgba(23,185,120,.48);
+  background: rgba(23,185,120,.15);
+}
+
+@media (max-width: 850px) {
+  .range-toolbar { align-items: flex-start; }
+  .range-buttons { width: 100%; overflow-x: auto; flex-wrap: nowrap; padding-bottom: 4px; }
+  .range-button { white-space: nowrap; }
+}

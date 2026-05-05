@@ -40,16 +40,58 @@
             <button id="resetButton" class="danger-button" type="button">Reset</button>
           </div>
         </div>
+        <div class="range-toolbar" aria-label="Vælg grafperiode">
+          <span id="chartRangeLabel">Viser: 10 minutter</span>
+          <div class="range-buttons">
+            <button type="button" data-chart-range="10m" class="range-button active">10 min</button>
+            <button type="button" data-chart-range="30m" class="range-button">30 min</button>
+            <button type="button" data-chart-range="1h" class="range-button">1 time</button>
+            <button type="button" data-chart-range="6h" class="range-button">6 timer</button>
+            <button type="button" data-chart-range="1d" class="range-button">1 dag</button>
+            <button type="button" data-chart-range="7d" class="range-button">7 dage</button>
+            <button type="button" data-chart-range="all" class="range-button">Alt</button>
+          </div>
+        </div>
         <div class="chart-shell">
           <canvas id="stockChart" width="1100" height="360" aria-label="TSN Stock graf"></canvas>
           <div id="chartTooltip" class="chart-tooltip hidden"></div>
         </div>
-        <p id="refreshInfo" class="refresh-info">Opdaterer automatisk hvert 20. sekund</p>
+        <p id="refreshInfo" class="refresh-info">Opdaterer automatisk og henter grafhistorik hvert 20. sekund</p>
       </article>
     </section>
 
 
-    <section class="money-layout">
+
+    <section class="auth-layout">
+      <article id="authCard" class="card auth-card">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Original TSN konto</p>
+            <h2>Log ind på TSN-S</h2>
+          </div>
+        </div>
+        <p class="small">Brug dit normale TSN-brugernavn og adgangskode. TSN-S spørger den originale TSN-server om login og gemmer din TSNM wallet på din TSN-konto.</p>
+        <form id="loginForm" class="login-form">
+          <label for="loginUsername">Brugernavn</label>
+          <input id="loginUsername" name="username" autocomplete="username" placeholder="Dit TSN-brugernavn" required />
+          <label for="loginPassword">Adgangskode</label>
+          <input id="loginPassword" name="password" type="password" autocomplete="current-password" placeholder="Din TSN-adgangskode" required />
+          <button class="buy-button" type="submit">Log ind</button>
+        </form>
+        <p id="authStatus" class="small trade-status"></p>
+      </article>
+
+      <article id="accountCard" class="card account-card hidden">
+        <div>
+          <p class="eyebrow">Logget ind som</p>
+          <h2 id="accountName">TSN bruger</h2>
+          <p id="accountUser" class="small">Original TSN konto</p>
+        </div>
+        <button id="logoutButton" class="secondary" type="button">Log ud</button>
+      </article>
+    </section>
+
+    <section id="moneySection" class="money-layout">
       <article class="card money-card">
         <div class="section-head">
           <div>
@@ -64,10 +106,11 @@
           <div><span>Portefølje</span><strong id="portfolioValue">0,00 TSNM</strong></div>
           <div><span>Net worth</span><strong id="netWorth">0,00 TSNM</strong></div>
         </div>
+        <p id="walletLockText" class="small money-note">Log ind med din originale TSN-konto for at optjene TSNM og handle.</p>
         <p id="rewardInfo" class="small money-note">Du får 10 TSNM for hvert minut, du er online på TSN Stock.</p>
       </article>
 
-      <article class="card trade-card">
+      <article id="tradeSection" class="card trade-card">
         <div class="section-head">
           <div>
             <p class="eyebrow">Fiktiv trading</p>
