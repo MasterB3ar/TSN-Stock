@@ -1,7 +1,7 @@
 {
   "name": "tsn-stock-standalone",
-  "version": "1.0.7",
-  "description": "Standalone TSN Stock with MongoDB persistence, TSNM trading, reset, around-100 pricing, uncapped activity points, and stable event-driven price ticks.",
+  "version": "1.0.8",
+  "description": "Standalone TSN Stock with MongoDB persistence, TSNM trading, reset, around-100 pricing, uncapped activity points, and balanced up/down event-driven price ticks.",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",

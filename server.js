@@ -34,6 +34,8 @@ const METRIC_MESSAGE_EPSILON = Number(process.env.TSN_STOCK_MESSAGE_EPSILON || 0
 const METRIC_POST_EPSILON = Number(process.env.TSN_STOCK_POST_EPSILON || 0.05);
 const METRIC_ACTIVITY_EPSILON = Number(process.env.TSN_STOCK_ACTIVITY_EPSILON || 0.01);
 const MAX_PRICE_MOVE_PER_TICK = Number(process.env.TSN_STOCK_MAX_PRICE_MOVE_PER_TICK || 1.25);
+const DOWNTURN_STRENGTH = Number(process.env.TSN_STOCK_DOWNTURN_STRENGTH || 1);
+const QUIET_DECAY_PER_TICK = Number(process.env.TSN_STOCK_QUIET_DECAY_PER_TICK || 0.08);
 
 const PERSISTENCE_ENABLED = Boolean(MONGODB_URI);
 let mongoClient = null;
@@ -509,7 +511,7 @@ function calculateStandalonePrice(sourceStock, history) {
         changedSinceLastSnapshot: false,
         heldBecauseMetricsUnchanged: true
       },
-      pricingEngine: 'event-driven-flat-until-real-metric-change-v6'
+      pricingEngine: 'event-driven-balanced-up-down-v7'
     };
   }
 
@@ -548,32 +550,41 @@ function calculateStandalonePrice(sourceStock, history) {
 
   let rawMove = targetPull + baseGravity + activityLevelBoost + onlineMomentum + messageMomentum + postMomentum + activityMomentum;
 
-  // Only apply negative pressure when TSN is completely quiet. With active users/messages/posts,
-  // negative target pull is softened so a busy TSN does not trend down unfairly.
+  // A real stock simulation needs three states:
+  // 1) unchanged metrics => exactly flat, handled by the early return above;
+  // 2) increased metrics => green tick;
+  // 3) decreased/quiet metrics => red tick.
+  // The previous version softened negative moves too much, so the stock almost never
+  // moved down. This version only blocks artificial formula-red ticks, not real drops.
+  const activityDropped = deltas.onlineDelta < -0.0001
+    || deltas.messageDelta <= -Math.max(0.25, METRIC_MESSAGE_EPSILON * 4)
+    || deltas.postDelta <= -Math.max(0.1, METRIC_POST_EPSILON * 4)
+    || deltas.activityDelta <= -Math.max(0.02, METRIC_ACTIVITY_EPSILON * 2);
+
+  const dropPressure = (
+    Math.max(0, -deltas.onlineDelta) * 0.48
+    + Math.max(0, -deltas.messageDelta) * 0.075
+    + Math.max(0, -deltas.postDelta) * 0.48
+    + Math.max(0, -deltas.activityDelta) * 1.35
+  ) * Math.max(0.1, DOWNTURN_STRENGTH);
+
   if (!hasAnyActivity) {
-    rawMove -= 0.05;
+    rawMove = Math.min(rawMove, -Math.max(0.01, QUIET_DECAY_PER_TICK));
+  } else if (activityDropped) {
+    rawMove = Math.min(rawMove, -Math.max(0.02, dropPressure));
   } else if (rawMove < 0) {
-    rawMove *= 0.18;
+    // TSN is active and metrics did not actually drop, so do not show fake red ticks.
+    rawMove = 0;
   }
 
   // Any real new activity should create a small green tick. If activity is merely
   // stable, the early-return above holds the price at 0 change.
-  if (activityIncreased && rawMove < 0.03) {
+  if (activityIncreased && !activityDropped && rawMove < 0.03) {
     rawMove = 0.03;
   }
 
-  // With people still actively using TSN, avoid red ticks from formula gravity
-  // unless the measured activity actually dropped meaningfully.
-  const activityDropped = deltas.onlineDelta < -0.0001
-    || deltas.messageDelta <= -Math.max(1, METRIC_MESSAGE_EPSILON * 4)
-    || deltas.postDelta <= -Math.max(0.5, METRIC_POST_EPSILON * 4)
-    || deltas.activityDelta <= -Math.max(0.08, METRIC_ACTIVITY_EPSILON * 4);
-  if (hasAnyActivity && !activityDropped && rawMove < 0) {
-    rawMove = 0;
-  }
-
   const maxMove = Math.max(0.01, MAX_PRICE_MOVE_PER_TICK);
-  rawMove = clamp(rawMove, previousPrice > basePrice * 1.8 ? -maxMove : -maxMove, maxMove);
+  rawMove = clamp(rawMove, -maxMove, maxMove);
 
   // Tiny movements look like noise. Round them to flat so the UI shows 0 / 0.
   if (Math.abs(rawMove) < 0.01) {
@@ -605,7 +616,7 @@ function calculateStandalonePrice(sourceStock, history) {
       metricDeltas: deltas,
       changedSinceLastSnapshot: deltas.changed
     },
-    pricingEngine: 'event-driven-flat-until-real-metric-change-v6'
+    pricingEngine: 'event-driven-balanced-up-down-v7'
   };
 }
 

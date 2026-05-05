@@ -52,6 +52,8 @@ TSN_STOCK_MESSAGE_EPSILON=0.05
 TSN_STOCK_POST_EPSILON=0.05
 TSN_STOCK_ACTIVITY_EPSILON=0.01
 TSN_STOCK_MAX_PRICE_MOVE_PER_TICK=1.25
+TSN_STOCK_DOWNTURN_STRENGTH=1
+TSN_STOCK_QUIET_DECAY_PER_TICK=0.08
 ```
 
 ## Render setup
@@ -97,11 +99,18 @@ MONGODB_TRADE_COLLECTION=tsnMoneyTrades
 `TSN_STOCK_TARGET_BASE_PRICE=100` keeps the stock centered around 100. If your old MongoDB history is already around 500, `TSN_STOCK_AUTO_REBASE=true` automatically scales the saved history down the first time the app runs after deployment.
 
 
-### Price stability fix
+### Price stability + down-move fix
 
 This version uses event-driven price ticks. If online users, messages/hour, posts/hour, and activity score are effectively unchanged, the stock holds still and shows `0` movement instead of bouncing `+4 / -4 / +4 / -4`.
 
-The price still moves when TSN activity actually changes. The optional epsilon settings above control how small a rolling-rate change must be before it counts as a real stock event.
+The price now moves both ways:
+
+- Activity increases → the stock can move up.
+- Activity decreases → the stock can move down.
+- No meaningful change → the stock stays flat.
+- No activity → the stock slowly drifts down by `TSN_STOCK_QUIET_DECAY_PER_TICK`.
+
+`TSN_STOCK_DOWNTURN_STRENGTH` controls how strongly falling activity pushes the price down. The optional epsilon settings above control how small a rolling-rate change must be before it counts as a real stock event.
 
 ## Where to find `MONGODB_URI`
 
