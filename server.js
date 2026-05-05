@@ -7,6 +7,19 @@ try {
 } catch {
   MongoClient = null;
 }
+let bcrypt = null;
+try {
+  bcrypt = require('bcryptjs');
+} catch {
+  bcrypt = null;
+}
+let jwt = null;
+try {
+  jwt = require('jsonwebtoken');
+} catch {
+  jwt = null;
+}
+const crypto = require('crypto');
 
 const PORT = Number(process.env.PORT || 3010);
 const TSN_API_BASE_URL = String(process.env.TSN_API_BASE_URL || '').replace(/\/$/, '');
@@ -16,6 +29,12 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 // This is the same setup style as the original TSN app: MONGODB_URI.
 const MONGODB_URI = String(process.env.MONGODB_URI || '');
 const DATABASE = String(process.env.MONGODB_DATABASE || 'tsn_stock');
+const ORIGINAL_TSN_MONGODB_URI = String(process.env.TSN_ORIGINAL_MONGODB_URI || process.env.ORIGINAL_TSN_MONGODB_URI || MONGODB_URI || '');
+const ORIGINAL_TSN_DATABASE = String(process.env.TSN_ORIGINAL_MONGODB_DATABASE || process.env.MONGODB_TSN_DATABASE || 'tsn');
+const ORIGINAL_TSN_STATE_COLLECTION = String(process.env.TSN_ORIGINAL_MONGODB_STATE_COLLECTION || 'app_state');
+const ORIGINAL_TSN_STATE_ID = String(process.env.TSN_ORIGINAL_MONGODB_STATE_ID || 'main');
+const STOCK_SESSION_SECRET = String(process.env.TSN_STOCK_SESSION_SECRET || process.env.JWT_SECRET || process.env.SESSION_SECRET || 'dev-tsn-stock-session-secret-change-me');
+const TSN_DATA_ENCRYPTION_KEY = String(process.env.TSN_DATA_ENCRYPTION_KEY || process.env.JWT_SECRET || 'dev-data-encryption-key-change-before-release-32chars');
 const COLLECTION = String(process.env.MONGODB_COLLECTION || 'stockSnapshots');
 const WALLET_COLLECTION = String(process.env.MONGODB_WALLET_COLLECTION || 'tsnMoneyWallets');
 const TRADE_COLLECTION = String(process.env.MONGODB_TRADE_COLLECTION || 'tsnMoneyTrades');
@@ -43,6 +62,7 @@ let mongoClient = null;
 let mongoCollection = null;
 let mongoWalletCollection = null;
 let mongoTradeCollection = null;
+let originalTsnMongoClient = null;
 
 let cachedPayload = null;
 let cachedAt = 0;
@@ -104,6 +124,171 @@ async function fetchJsonWithTimeout(url, options = {}, timeoutMs = 12000) {
 }
 
 
+
+function normalizeUsername(value) {
+  return String(value || '').trim().toLowerCase().replace(/[^a-z0-9_]/g, '').slice(0, 24);
+}
+
+const DATA_KEY_CANDIDATES = [...new Set([
+  TSN_DATA_ENCRYPTION_KEY,
+  ...String(process.env.TSN_OLD_DATA_ENCRYPTION_KEYS || '')
+    .split(',')
+    .map((key) => key.trim())
+    .filter(Boolean),
+  process.env.JWT_SECRET || '',
+  'dev-secret-change-before-release',
+  'dev-data-encryption-key-change-before-release-32chars'
+].filter(Boolean))];
+
+const CRYPTO_KEY_CANDIDATES = DATA_KEY_CANDIDATES.map((value) => ({
+  fieldKey: crypto.createHash('sha256').update(String(value)).digest(),
+  lookupKey: crypto.createHash('sha256').update(`lookup:${value}`).digest()
+}));
+
+function lookupHashWithKey(scope, normalizedValue, lookupKey) {
+  const value = String(normalizedValue || '');
+  if (!value) return '';
+  return crypto.createHmac('sha256', lookupKey).update(`${scope}:${value}`).digest('hex');
+}
+
+function lookupHashes(scope, normalizedValue) {
+  return CRYPTO_KEY_CANDIDATES.map((keys) => lookupHashWithKey(scope, normalizedValue, keys.lookupKey));
+}
+
+function decryptTsnField(value) {
+  const text = String(value || '');
+  if (!text.startsWith('v1:')) return text;
+  const [, ivText, tagText, encryptedText] = text.split(':');
+  for (const keys of CRYPTO_KEY_CANDIDATES) {
+    try {
+      const decipher = crypto.createDecipheriv('aes-256-gcm', keys.fieldKey, Buffer.from(ivText, 'base64url'));
+      decipher.setAuthTag(Buffer.from(tagText, 'base64url'));
+      return Buffer.concat([
+        decipher.update(Buffer.from(encryptedText, 'base64url')),
+        decipher.final()
+      ]).toString('utf8');
+    } catch {
+      // Try next configured/legacy key.
+    }
+  }
+  return '';
+}
+
+function getOriginalUserField(user, field) {
+  if (!user) return '';
+  const encryptedValue = user[`${field}Enc`];
+  if (encryptedValue) return decryptTsnField(encryptedValue);
+  return String(user[field] || '');
+}
+
+function originalUserMatchesLogin(user, loginValue) {
+  const username = normalizeUsername(loginValue);
+  if (!username || !user) return false;
+  const hashes = lookupHashes('username', username);
+  if (user.usernameHash && hashes.includes(user.usernameHash)) return true;
+  return normalizeUsername(getOriginalUserField(user, 'username')) === username;
+}
+
+async function getOriginalTsnDb() {
+  if (!ORIGINAL_TSN_MONGODB_URI) throw new Error('TSN_ORIGINAL_MONGODB_URI or MONGODB_URI is missing.');
+  if (!MongoClient) throw new Error('MongoDB driver is not installed.');
+  if (!originalTsnMongoClient) {
+    originalTsnMongoClient = new MongoClient(ORIGINAL_TSN_MONGODB_URI, {
+      serverSelectionTimeoutMS: 12000,
+      connectTimeoutMS: 12000,
+      maxPoolSize: 4
+    });
+    await originalTsnMongoClient.connect();
+  }
+  return originalTsnMongoClient.db(ORIGINAL_TSN_DATABASE);
+}
+
+async function readOriginalTsnState() {
+  const db = await getOriginalTsnDb();
+  const document = await db.collection(ORIGINAL_TSN_STATE_COLLECTION).findOne({ _id: ORIGINAL_TSN_STATE_ID });
+  const state = document?.data || document?.state || document || null;
+  if (!state || !Array.isArray(state.users)) {
+    const error = new Error(`Could not find original TSN users in MongoDB database "${ORIGINAL_TSN_DATABASE}" collection "${ORIGINAL_TSN_STATE_COLLECTION}".`);
+    error.statusCode = 502;
+    throw error;
+  }
+  return state;
+}
+
+function isOriginalUserBanned(user) {
+  return Boolean(user && user.bannedAt);
+}
+
+function signStockSession(user) {
+  if (!jwt) throw new Error('jsonwebtoken is not installed.');
+  return jwt.sign({
+    iss: 'tsn-stock',
+    sub: String(user.id),
+    username: String(user.username || ''),
+    name: String(user.name || user.username || 'TSN User'),
+    role: user.role || 'user',
+    isAdmin: Boolean(user.isAdmin || user.role === 'admin')
+  }, STOCK_SESSION_SECRET, { expiresIn: '7d' });
+}
+
+function verifyStockSession(token) {
+  if (!jwt || !token) return null;
+  try {
+    const payload = jwt.verify(token, STOCK_SESSION_SECRET);
+    if (payload?.iss !== 'tsn-stock' || !payload?.sub) return null;
+    return {
+      id: String(payload.sub),
+      username: String(payload.username || 'tsn-user'),
+      name: String(payload.name || payload.username || 'TSN User'),
+      role: payload.role || 'user',
+      isAdmin: Boolean(payload.isAdmin || payload.role === 'admin')
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function directOriginalTsnLogin(username, password) {
+  if (!bcrypt) {
+    const error = new Error('bcryptjs is not installed, so direct TSN MongoDB login is unavailable.');
+    error.statusCode = 500;
+    throw error;
+  }
+  const login = String(username || '').trim();
+  const pass = String(password || '');
+  if (!login || !pass) {
+    const error = new Error('Skriv brugernavn og adgangskode.');
+    error.statusCode = 400;
+    throw error;
+  }
+  const state = await readOriginalTsnState();
+  const user = state.users.find((candidate) => originalUserMatchesLogin(candidate, login));
+  if (!user) {
+    const error = new Error('Forkert brugernavn eller adgangskode. Check også at TSN_ORIGINAL_MONGODB_DATABASE er sat til din normale TSN database, typisk "tsn".');
+    error.statusCode = 401;
+    throw error;
+  }
+  if (isOriginalUserBanned(user)) {
+    const error = new Error('Denne TSN-konto er banned.');
+    error.statusCode = 403;
+    throw error;
+  }
+  const ok = await bcrypt.compare(pass, user.passwordHash || '');
+  if (!ok) {
+    const error = new Error('Forkert brugernavn eller adgangskode.');
+    error.statusCode = 401;
+    throw error;
+  }
+  const publicUser = publicTsnUser({
+    id: user.id,
+    username: getOriginalUserField(user, 'username'),
+    name: getOriginalUserField(user, 'name'),
+    role: user.role || 'user',
+    isAdmin: user.role === 'admin'
+  });
+  return { token: signStockSession(publicUser), user: publicUser, authMode: 'mongodb' };
+}
+
 function getBearerToken(req) {
   const header = req.headers.authorization || '';
   return header.startsWith('Bearer ') ? header.slice(7).trim() : '';
@@ -120,45 +305,68 @@ function publicTsnUser(user) {
 }
 
 async function proxyTsnLogin(username, password) {
+  const directErrors = [];
+  if (ORIGINAL_TSN_MONGODB_URI && bcrypt && jwt && MongoClient) {
+    try {
+      return await directOriginalTsnLogin(username, password);
+    } catch (error) {
+      directErrors.push(error.data?.error || error.message || 'Direct MongoDB login failed.');
+      // If the credentials were checked and rejected, do not fall back to API login.
+      if ([400, 401, 403].includes(Number(error.statusCode))) throw error;
+    }
+  }
+
   if (!TSN_API_BASE_URL) {
-    const error = new Error('TSN_API_BASE_URL is missing. TSN-S needs the original TSN URL to log users in.');
+    const error = new Error(`TSN-S could not log in. Direct MongoDB login failed: ${directErrors.join(' | ') || 'not configured'}. TSN_API_BASE_URL is also missing.`);
     error.statusCode = 500;
     throw error;
   }
-  const data = await fetchJsonWithTimeout(`${TSN_API_BASE_URL}/api/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, login: username, password })
-  }, 12000);
-  if (!data?.token || !data?.user) {
-    const error = new Error('Original TSN login did not return a valid session.');
-    error.statusCode = 502;
-    throw error;
+
+  try {
+    const data = await fetchJsonWithTimeout(`${TSN_API_BASE_URL}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, login: username, password })
+    }, 12000);
+    if (!data?.token || !data?.user) {
+      const error = new Error('Original TSN login did not return token/user. Deploy the newest normal TSN version or enable direct MongoDB login.');
+      error.statusCode = 502;
+      throw error;
+    }
+    // Convert the original TSN token into a TSN-S token, so TSN-S does not break if the original token format changes.
+    const user = publicTsnUser(data.user);
+    return { token: jwt ? signStockSession(user) : data.token, user, authMode: 'api' };
+  } catch (error) {
+    const message = error.data?.error || error.message || 'Login fejlede.';
+    const combined = directErrors.length ? `${message} Direct MongoDB fallback: ${directErrors.join(' | ')}` : message;
+    const wrapped = new Error(combined);
+    wrapped.statusCode = error.statusCode || 401;
+    throw wrapped;
   }
-  return { token: data.token, user: publicTsnUser(data.user) };
 }
 
 async function getTsnSession(req) {
-  if (!TSN_API_BASE_URL) {
-    const error = new Error('TSN_API_BASE_URL is missing.');
-    error.statusCode = 500;
-    throw error;
-  }
   const token = getBearerToken(req);
   if (!token) {
     const error = new Error('Du skal logge ind med din originale TSN-konto.');
     error.statusCode = 401;
     throw error;
   }
-  const data = await fetchJsonWithTimeout(`${TSN_API_BASE_URL}/api/me`, {
-    headers: { Authorization: `Bearer ${token}` }
-  }, 12000);
-  if (!data?.user) {
-    const error = new Error('Din TSN-session kunne ikke bekræftes. Log ind igen.');
-    error.statusCode = 401;
-    throw error;
+
+  const stockUser = verifyStockSession(token);
+  if (stockUser) return { token, user: publicTsnUser(stockUser) };
+
+  // Backward compatibility for older TSN-S tokens that were original TSN JWTs.
+  if (TSN_API_BASE_URL) {
+    const data = await fetchJsonWithTimeout(`${TSN_API_BASE_URL}/api/me`, {
+      headers: { Authorization: `Bearer ${token}` }
+    }, 12000);
+    if (data?.user) return { token, user: publicTsnUser(data.user) };
   }
-  return { token, user: publicTsnUser(data.user) };
+
+  const error = new Error('Din TSN-S-session kunne ikke bekræftes. Log ind igen.');
+  error.statusCode = 401;
+  throw error;
 }
 
 async function walletForRequest(req) {
@@ -993,7 +1201,9 @@ const server = http.createServer((req, res) => {
       autoRebaseEnabled: AUTO_REBASE_ENABLED,
       persistence: PERSISTENCE_ENABLED ? 'mongodb-uri' : 'memory',
       tsnMoney: { earnPerMinute: TSNM_EARN_PER_MINUTE, walletCollection: WALLET_COLLECTION, tradeCollection: TRADE_COLLECTION },
-      tsnApiConfigured: Boolean(TSN_API_BASE_URL)
+      tsnApiConfigured: Boolean(TSN_API_BASE_URL),
+      originalTsnMongoLogin: Boolean(ORIGINAL_TSN_MONGODB_URI && MongoClient && bcrypt && jwt),
+      originalTsnDatabase: ORIGINAL_TSN_DATABASE
     });
   }
 

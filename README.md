@@ -297,3 +297,27 @@ TSN_STOCK_MAX_HISTORY=720
 `TSN_STOCK_HISTORY_API_MAX_POINTS` controls how many points the graph API returns after downsampling. For long periods like 1 day or 7 days, the server down-samples the saved MongoDB history so the browser stays fast.
 
 `TSN_STOCK_MAX_HISTORY` still controls how much history is loaded for the internal pricing engine. The chart API can query longer stored MongoDB history by range, but old points must still exist in your MongoDB collection.
+
+
+## Login fix / original TSN account login
+
+TSN-S can now log users in in two ways:
+
+1. Directly through the original TSN MongoDB database. This is recommended because it works even if the original TSN API is older.
+2. Through the original TSN API at `TSN_API_BASE_URL`.
+
+Recommended Render environment variables for login:
+
+```env
+TSN_API_BASE_URL=https://YOUR-NORMAL-TSN.onrender.com
+MONGODB_URI=mongodb+srv://USERNAME:PASSWORD@cluster0.xxxxx.mongodb.net/tsn_stock?retryWrites=true&w=majority
+TSN_ORIGINAL_MONGODB_URI=mongodb+srv://USERNAME:PASSWORD@cluster0.xxxxx.mongodb.net/tsn?retryWrites=true&w=majority
+TSN_ORIGINAL_MONGODB_DATABASE=tsn
+TSN_ORIGINAL_MONGODB_STATE_COLLECTION=app_state
+TSN_STOCK_SESSION_SECRET=make-this-a-long-random-secret
+TSN_DATA_ENCRYPTION_KEY=same-key-as-original-tsn
+NODE_VERSION=22.16.0
+NODE_ENV=production
+```
+
+If your original TSN and TSN-S use the same Atlas cluster, `TSN_ORIGINAL_MONGODB_URI` can use the same username/password as `MONGODB_URI`, but the database should be the original TSN database, normally `tsn`, not `tsn_stock`.

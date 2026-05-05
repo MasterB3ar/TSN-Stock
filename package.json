@@ -1,14 +1,16 @@
 {
   "name": "tsn-stock-standalone",
-  "version": "1.1.0",
-  "description": "Standalone TSN Stock with TSN account login, TSNM trading, MongoDB persistence, balanced movement, and selectable Nordnet-style chart ranges.",
+  "version": "1.1.1",
+  "description": "Standalone TSN Stock with original TSN account login, TSNM trading, MongoDB persistence, balanced movement, and selectable chart ranges.",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "build": "node -e \"console.log('No build step needed for TSN Stock')\""
   },
   "dependencies": {
-    "mongodb": "^6.18.0"
+    "mongodb": "^6.18.0",
+    "bcryptjs": "^2.4.3",
+    "jsonwebtoken": "^9.0.2"
   },
   "keywords": [
     "tsn",
