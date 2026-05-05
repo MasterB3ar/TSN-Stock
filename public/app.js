@@ -1,5 +1,5 @@
 const config = window.TSN_STOCK_CONFIG || {};
-const REFRESH_INTERVAL_MS = Number(config.refreshIntervalMs || 20_000);
+const REFRESH_INTERVAL_MS = Number(config.refreshIntervalMs || 2_000);
 
 const state = {
   stock: null,
@@ -321,7 +321,7 @@ function renderStock(stock) {
   change.textContent = `${formatSigned(stock.change)} · ${Number(stock.changePercent || 0) > 0 ? '+' : ''}${formatNumber(stock.changePercent)}%`;
   $('#updatedAt').textContent = `Opdateret ${formatTime(stock.updatedAt)}`;
   $('#stockDisclaimer').textContent = stock.disclaimer || 'Fiktiv TSN-aktivitetspris. Ikke en rigtig aktie.';
-  $('#refreshInfo').textContent = `Opdaterer automatisk hvert ${Math.round(REFRESH_INTERVAL_MS / 1000)}. sekund`;
+  $('#refreshInfo').textContent = `Tjekker for ændringer hvert ${Math.max(1, Math.round(REFRESH_INTERVAL_MS / 1000))}. sekund og opdaterer ved selv små ændringer`;
   const persistenceInfo = $('#persistenceInfo');
   if (persistenceInfo) {
     const persistence = stock.persistence || {};
@@ -356,7 +356,7 @@ async function fetchStock({ manual = false } = {}) {
   if (manual) setStatus('Opdaterer...', '');
 
   try {
-    const url = manual ? '/api/stock?force=1' : '/api/stock';
+    const url = '/api/stock?force=1';
     const response = await fetchWithTimeout(url, { cache: 'no-store' }, 12000);
     const data = await response.json().catch(() => ({}));
     if (!response.ok || !data.ok) {

@@ -1,6 +1,6 @@
 # TSN Stock Standalone — MongoDB URI persistent history
 
-This is the standalone TSN Stock website. It reads activity metrics from your original TSN website, calculates the TSN Stock price inside the standalone TSN Stock service, and saves price snapshots in MongoDB, so the graph history does **not** reset after Render restarts/redeploys.
+This is the standalone TSN Stock website. It reads activity metrics from your original TSN website, calculates the TSN Stock price inside the standalone TSN Stock service with a more bullish activity model, and saves price snapshots in MongoDB, so the graph history does **not** reset after Render restarts/redeploys.
 
 This version uses the normal MongoDB Atlas connection string:
 
@@ -10,8 +10,9 @@ MONGODB_URI=mongodb+srv://...
 
 ## What is included
 
-- Saves TSN Stock price snapshots roughly every 20 seconds.
+- Saves TSN Stock price snapshots whenever metrics change, checked about every 2 seconds.
 - Calculates the next price from the last MongoDB snapshot, so the number moves when TSN activity changes.
+- Uses a bullish activity model: active users, messages, and posts push the price up much more strongly, while quiet-period drops are much smaller.
 - Loads old price history after restart/redeploy.
 - Keeps the Nordnet-style hover chart.
 - Uses the official `mongodb` Node package.
@@ -57,11 +58,11 @@ Optional:
 ```txt
 MONGODB_DATABASE=tsn_stock
 MONGODB_COLLECTION=stockSnapshots
-TSN_STOCK_REFRESH_MS=20000
+TSN_STOCK_REFRESH_MS=2000
 TSN_STOCK_MAX_HISTORY=720
 ```
 
-`TSN_STOCK_MAX_HISTORY=720` means about 4 hours of 20-second snapshots. Increase it if you want a longer chart.
+`TSN_STOCK_MAX_HISTORY=720` means about 24 minutes of 2-second snapshots if activity constantly changes. Increase it if you want a longer chart, for example `TSN_STOCK_MAX_HISTORY=10800` for about 6 hours.
 
 ## Where to find `MONGODB_URI`
 
@@ -111,7 +112,7 @@ GET /healthz
 
 ## What affects the price?
 
-TSN Stock is fictional. The standalone TSN Stock server calculates the price from the previous saved price plus current activity. The price changes based on:
+TSN Stock is fictional. The standalone TSN Stock server calculates the price from the previous saved price plus current activity. This version is intentionally more bullish, so active TSN usage pushes the price up clearly. The price changes based on:
 
 - online users
 - private messages + global comments per hour

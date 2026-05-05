@@ -18,7 +18,7 @@ const MONGODB_URI = String(process.env.MONGODB_URI || '');
 const DATABASE = String(process.env.MONGODB_DATABASE || 'tsn_stock');
 const COLLECTION = String(process.env.MONGODB_COLLECTION || 'stockSnapshots');
 const MAX_HISTORY_POINTS = Number(process.env.TSN_STOCK_MAX_HISTORY || 720);
-const REFRESH_INTERVAL_MS = Number(process.env.TSN_STOCK_REFRESH_MS || 20000);
+const REFRESH_INTERVAL_MS = Number(process.env.TSN_STOCK_REFRESH_MS || 2000);
 
 const PERSISTENCE_ENABLED = Boolean(MONGODB_URI);
 let mongoClient = null;
@@ -182,27 +182,93 @@ function normalizeMetrics(metrics = {}) {
   };
 }
 
+
+function metricDelta(current, previous) {
+  const onlineDelta = Number(current.onlineUsers || 0) - Number(previous.onlineUsers || 0);
+  const messageDelta = Number(current.messagesPerHour || 0) - Number(previous.messagesPerHour || 0);
+  const postDelta = Number(current.postsPerHour || 0) - Number(previous.postsPerHour || 0);
+  const activityDelta = Number(current.activityScore || 0) - Number(previous.activityScore || 0);
+  return {
+    onlineDelta,
+    messageDelta,
+    postDelta,
+    activityDelta,
+    changed: Math.abs(onlineDelta) > 0.0001
+      || Math.abs(messageDelta) > 0.0001
+      || Math.abs(postDelta) > 0.0001
+      || Math.abs(activityDelta) > 0.0001
+  };
+}
+
+function sameSnapshotMetrics(a = {}, b = {}) {
+  return Math.abs(Number(a.onlineUsers || 0) - Number(b.onlineUsers || 0)) < 0.0001
+    && Math.abs(Number(a.messagesPerHour || 0) - Number(b.messagesPerHour || 0)) < 0.0001
+    && Math.abs(Number(a.postsPerHour || 0) - Number(b.postsPerHour || 0)) < 0.0001
+    && Math.abs(Number(a.activityScore || 0) - Number(b.activityScore || 0)) < 0.0001;
+}
+
 function calculateStandalonePrice(sourceStock, history) {
   const clean = cleanHistory(history);
   const lastPoint = clean[clean.length - 1] || null;
   const previousPrice = Number(lastPoint?.price) || Number(sourceStock?.price) || 100;
   const previousMetrics = normalizeMetrics(lastPoint?.metrics || {});
   const metrics = normalizeMetrics(sourceStock?.metrics || {});
+  const deltas = metricDelta(metrics, previousMetrics);
 
-  // Target price is based on whether current activity is above/below what is expected for this time of day.
-  const targetPrice = clamp(100 * (0.70 + metrics.activityScore * 0.64), 5, 9999);
-  const targetPull = (targetPrice - previousPrice) * 0.18;
+  const activeUsers = metrics.onlineUsers > 0;
+  const activeMessages = metrics.messagesPerHour > 0;
+  const activePosts = metrics.postsPerHour > 0;
+  const hasAnyActivity = activeUsers || activeMessages || activePosts;
+  const hasStrongActivity = metrics.onlineUsers >= 2 || metrics.messagesPerHour >= 3 || metrics.postsPerHour >= 1 || metrics.activityScore >= 0.55;
+  const activityIncreased = deltas.onlineDelta > 0 || deltas.messageDelta > 0 || deltas.postDelta > 0 || deltas.activityDelta > 0.001;
 
-  // Make the chart visibly react when the live activity changes between snapshots.
-  const onlineMomentum = (metrics.onlineUsers - previousMetrics.onlineUsers) * 0.65;
-  const messageMomentum = (metrics.messagesPerHour - previousMetrics.messagesPerHour) * 0.08;
-  const postMomentum = (metrics.postsPerHour - previousMetrics.postsPerHour) * 0.55;
-  const activityMomentum = (metrics.activityScore - previousMetrics.activityScore) * 3.2;
+  // Bullish model: TSN Stock rewards real use more strongly than it punishes quiet periods.
+  // It no longer drops just because activity is below a time-of-day expectation. If users are
+  // online or people are posting/chatting, the natural pressure is upward.
+  const basePrice = 100;
+  const targetPrice = clamp(basePrice * (0.94 + metrics.activityScore * 1.18), 5, 99999);
+  const targetPull = (targetPrice - previousPrice) * 0.055;
 
-  // Small decay when activity is far below expected, so the graph can also move down.
-  const quietPressure = metrics.activityScore < 0.35 ? -0.18 : 0;
-  const rawMove = clamp(targetPull + onlineMomentum + messageMomentum + postMomentum + activityMomentum + quietPressure, -7.5, 7.5);
-  const price = Number(clamp(previousPrice + rawMove, 1, 9999).toFixed(2));
+  const activityLevelBoost =
+    metrics.onlineUsers * 0.035
+    + metrics.messagesPerHour * 0.018
+    + metrics.postsPerHour * 0.12
+    + metrics.activityScore * 0.18;
+
+  const onlineMomentum = deltas.onlineDelta * 1.35;
+  const messageMomentum = deltas.messageDelta * 0.34;
+  const postMomentum = deltas.postDelta * 1.85;
+  const activityMomentum = deltas.activityDelta * 8.75;
+
+  let rawMove = targetPull + activityLevelBoost + onlineMomentum + messageMomentum + postMomentum + activityMomentum;
+
+  // Only apply negative pressure when TSN is completely quiet. With active users/messages/posts,
+  // negative target pull is softened so a busy TSN does not trend down unfairly.
+  if (!hasAnyActivity) {
+    rawMove -= 0.05;
+  } else if (rawMove < 0) {
+    rawMove *= 0.18;
+  }
+
+  // Any new activity should create a visible green tick.
+  if (activityIncreased && rawMove < 0.03) {
+    rawMove = 0.03;
+  }
+
+  // If there is strong current activity, keep the stock biased upward even if the previous
+  // snapshot had slightly higher activity. This makes active TSN sessions feel bullish.
+  if (hasStrongActivity && rawMove < 0.015) {
+    rawMove = 0.015;
+  }
+
+  // When activity is unchanged but still present, drift up slowly instead of going flat/down.
+  if (!deltas.changed && hasAnyActivity && rawMove < 0.01) {
+    rawMove = 0.01;
+  }
+
+  rawMove = clamp(rawMove, -1.25, 12.5);
+
+  const price = Number(clamp(previousPrice + rawMove, 1, 99999).toFixed(2));
   const change = Number((price - previousPrice).toFixed(2));
   const changePercent = Number((previousPrice ? (change / previousPrice) * 100 : 0).toFixed(2));
 
@@ -217,9 +283,16 @@ function calculateStandalonePrice(sourceStock, history) {
     metrics: {
       ...metrics,
       targetPrice: Number(targetPrice.toFixed(2)),
-      priceMove: Number(rawMove.toFixed(4))
+      priceMove: Number(rawMove.toFixed(4)),
+      bullishActivityBoost: Number(activityLevelBoost.toFixed(4)),
+      activeUsers,
+      activeMessages,
+      activePosts,
+      hasStrongActivity,
+      metricDeltas: deltas,
+      changedSinceLastSnapshot: deltas.changed
     },
-    pricingEngine: 'standalone-mongodb-history-v2'
+    pricingEngine: 'bullish-instant-standalone-mongodb-history-v4'
   };
 }
 

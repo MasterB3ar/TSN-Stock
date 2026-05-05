@@ -23,6 +23,6 @@ services:
       - key: MONGODB_COLLECTION
         value: stockSnapshots
       - key: TSN_STOCK_REFRESH_MS
-        value: "20000"
+        value: "2000"
       - key: TSN_STOCK_MAX_HISTORY
         value: "720"
