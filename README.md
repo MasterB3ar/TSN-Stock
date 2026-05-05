@@ -38,6 +38,18 @@ Example:
 https://your-normal-tsn.onrender.com/api/public/stock
 ```
 
+
+### Activity score
+
+This version removes the old activity-score cap. The visible activity score is now shown as activity points, so it can go beyond **3500** when TSN has high usage. The stock price still uses a softened score internally, so a huge activity score does not instantly destroy the around-100 price balance.
+
+Optional settings:
+
+```env
+TSN_STOCK_ACTIVITY_POINTS_MULTIPLIER=1000
+TSN_STOCK_ACTIVITY_PRICE_SOFT_CAP=8
+```
+
 ## Render setup
 
 Use these settings for the TSN Stock Render service:

@@ -442,7 +442,7 @@ function renderStock(stock) {
   $('#onlineUsers').textContent = metrics.onlineUsers ?? 0;
   $('#messagesHour').textContent = metrics.messagesPerHour ?? 0;
   $('#postsHour').textContent = metrics.postsPerHour ?? 0;
-  $('#activityScore').textContent = formatNumber(metrics.activityScore || 0, 3);
+  $('#activityScore').textContent = formatNumber(metrics.activityPoints ?? ((metrics.activityScore || 0) * 1000), 0);
   drawChart(stock);
   updateTradeEstimate();
 }

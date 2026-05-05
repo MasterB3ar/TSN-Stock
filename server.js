@@ -28,6 +28,8 @@ const RESET_BASE_PRICE = Number(process.env.TSN_STOCK_RESET_PRICE || 100);
 const TARGET_BASE_PRICE = Number(process.env.TSN_STOCK_TARGET_BASE_PRICE || RESET_BASE_PRICE || 100);
 const AUTO_REBASE_ENABLED = String(process.env.TSN_STOCK_AUTO_REBASE || 'true').toLowerCase() !== 'false';
 const AUTO_REBASE_THRESHOLD_MULTIPLIER = Number(process.env.TSN_STOCK_AUTO_REBASE_THRESHOLD || 1.8);
+const ACTIVITY_SCORE_POINTS_MULTIPLIER = Number(process.env.TSN_STOCK_ACTIVITY_POINTS_MULTIPLIER || 1000);
+const ACTIVITY_SCORE_PRICE_SOFT_CAP = Number(process.env.TSN_STOCK_ACTIVITY_PRICE_SOFT_CAP || 8);
 
 const PERSISTENCE_ENABLED = Boolean(MONGODB_URI);
 let mongoClient = null;
@@ -401,7 +403,21 @@ function normalizeMetrics(metrics = {}) {
   const onlineRatio = onlineUsers / expectedOnline;
   const messageRatio = messagesPerHour / expectedMessagesPerHour;
   const postRatio = postsPerHour / expectedPostsPerHour;
-  const calculatedActivityScore = clamp(onlineRatio * 0.45 + messageRatio * 0.30 + postRatio * 0.25, 0, 3.5);
+
+  // Uncapped activity model: earlier versions capped this at 3.5, which made the UI
+  // look like it could not pass 3,500 activity points. Keep the raw score uncapped
+  // for display/history, then use a separate softened value for price movement.
+  const calculatedActivityScore = Math.max(0, onlineRatio * 0.45 + messageRatio * 0.30 + postRatio * 0.25);
+  const sourceActivityScore = Number(metrics.activityScore);
+  const activityScore = Number.isFinite(sourceActivityScore) && sourceActivityScore > 0
+    ? Math.max(sourceActivityScore, calculatedActivityScore)
+    : calculatedActivityScore;
+  const activityPoints = Math.max(0, Math.round(activityScore * Math.max(1, ACTIVITY_SCORE_POINTS_MULTIPLIER)));
+  const priceActivityScore = clamp(
+    Math.log1p(activityScore) / Math.log(2),
+    0,
+    Math.max(1, ACTIVITY_SCORE_PRICE_SOFT_CAP)
+  );
 
   return {
     ...metrics,
@@ -416,7 +432,9 @@ function normalizeMetrics(metrics = {}) {
     onlineRatio: Number(onlineRatio.toFixed(4)),
     messageRatio: Number(messageRatio.toFixed(4)),
     postRatio: Number(postRatio.toFixed(4)),
-    activityScore: Number((Number(metrics.activityScore) || calculatedActivityScore).toFixed(3))
+    activityScore: Number(activityScore.toFixed(3)),
+    activityPoints,
+    priceActivityScore: Number(priceActivityScore.toFixed(3))
   };
 }
 
@@ -457,14 +475,15 @@ function calculateStandalonePrice(sourceStock, history) {
   const activeMessages = metrics.messagesPerHour > 0;
   const activePosts = metrics.postsPerHour > 0;
   const hasAnyActivity = activeUsers || activeMessages || activePosts;
-  const hasStrongActivity = metrics.onlineUsers >= 2 || metrics.messagesPerHour >= 3 || metrics.postsPerHour >= 1 || metrics.activityScore >= 0.55;
+  const scoreForPrice = Number(metrics.priceActivityScore) || clamp(metrics.activityScore, 0, Math.max(1, ACTIVITY_SCORE_PRICE_SOFT_CAP));
+  const hasStrongActivity = metrics.onlineUsers >= 2 || metrics.messagesPerHour >= 3 || metrics.postsPerHour >= 1 || metrics.activityScore >= 0.55 || metrics.activityPoints >= 550;
   const activityIncreased = deltas.onlineDelta > 0 || deltas.messageDelta > 0 || deltas.postDelta > 0 || deltas.activityDelta > 0.001;
 
-  // Rebased bullish model: TSN Stock should feel active, but it should normally trade
-  // around 100 instead of running away toward 500+. Activity can still push it up, but
-  // the engine has stronger gravity back toward the configured base price.
+  // Rebased bullish model: visible activity points can now go beyond 3,500, but
+  // the pricing engine uses a softened score so the stock can react without instantly
+  // exploding away from the 100-ish base.
   const basePrice = clamp(TARGET_BASE_PRICE, 1, 99999);
-  const targetPrice = clamp(basePrice * (0.92 + metrics.activityScore * 0.55), basePrice * 0.55, basePrice * 1.85);
+  const targetPrice = clamp(basePrice * (0.90 + scoreForPrice * 0.24), basePrice * 0.55, basePrice * 2.35);
   const distanceFromBase = previousPrice - basePrice;
   const targetPull = (targetPrice - previousPrice) * 0.13;
   const baseGravity = distanceFromBase > basePrice * 0.35
@@ -477,7 +496,8 @@ function calculateStandalonePrice(sourceStock, history) {
     metrics.onlineUsers * 0.018
     + metrics.messagesPerHour * 0.009
     + metrics.postsPerHour * 0.055
-    + metrics.activityScore * 0.07;
+    + scoreForPrice * 0.055
+    + Math.log1p(metrics.activityPoints || 0) * 0.008;
 
   const onlineMomentum = deltas.onlineDelta * 0.42;
   const messageMomentum = deltas.messageDelta * 0.09;
@@ -528,6 +548,7 @@ function calculateStandalonePrice(sourceStock, history) {
       ...metrics,
       targetPrice: Number(targetPrice.toFixed(2)),
       priceMove: Number(rawMove.toFixed(4)),
+      scoreForPrice: Number(scoreForPrice.toFixed(3)),
       bullishActivityBoost: Number(activityLevelBoost.toFixed(4)),
       activeUsers,
       activeMessages,
@@ -536,7 +557,7 @@ function calculateStandalonePrice(sourceStock, history) {
       metricDeltas: deltas,
       changedSinceLastSnapshot: deltas.changed
     },
-    pricingEngine: 'bullish-instant-standalone-mongodb-history-v4'
+    pricingEngine: 'bullish-instant-standalone-mongodb-history-v5-uncapped-activity'
   };
 }
 
