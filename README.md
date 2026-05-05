@@ -1,15 +1,20 @@
-# TSN Stock Standalone — persistent MongoDB history
+# TSN Stock Standalone — MongoDB URI persistent history
 
-This is the standalone TSN Stock website. It reads activity data from your original TSN website and now saves TSN Stock price snapshots so the graph history does **not** reset after Render restarts/redeploys.
+This is the standalone TSN Stock website. It reads activity data from your original TSN website and saves TSN Stock price snapshots in MongoDB, so the graph history does **not** reset after Render restarts/redeploys.
 
-This version still uses **zero npm dependencies**. MongoDB persistence is done through the **MongoDB Atlas Data API**, so Render does not need to install the MongoDB npm driver.
+This version uses the normal MongoDB Atlas connection string:
 
-## What is new
+```txt
+MONGODB_URI=mongodb+srv://...
+```
 
-- Saves a TSN Stock price snapshot roughly every 20 seconds.
+## What is included
+
+- Saves TSN Stock price snapshots roughly every 20 seconds.
 - Loads old price history after restart/redeploy.
 - Keeps the Nordnet-style hover chart.
-- Falls back to temporary in-memory history if MongoDB Data API is not configured.
+- Uses the official `mongodb` Node package.
+- Falls back to temporary in-memory history if `MONGODB_URI` is not configured.
 - Keeps `/healthz` for uptime checks.
 
 ## Original TSN requirement
@@ -31,7 +36,7 @@ https://your-normal-tsn.onrender.com/api/public/stock
 Use these settings for the TSN Stock Render service:
 
 ```txt
-Build Command: npm run build
+Build Command: npm install --omit=dev --no-audit --no-fund
 Start Command: npm start
 ```
 
@@ -39,50 +44,53 @@ Required environment variables:
 
 ```txt
 TSN_API_BASE_URL=https://your-normal-tsn.onrender.com
+MONGODB_URI=mongodb+srv://USERNAME:PASSWORD@cluster0.xxxxx.mongodb.net/tsn_stock?retryWrites=true&w=majority
 NODE_ENV=production
 NODE_VERSION=22.16.0
 NPM_CONFIG_AUDIT=false
 NPM_CONFIG_FUND=false
 ```
 
-Required for permanent MongoDB history:
-
-```txt
-MONGODB_DATA_API_URL=https://data.mongodb-api.com/app/YOUR_APP_ID/endpoint/data/v1
-MONGODB_DATA_API_KEY=your_data_api_key
-MONGODB_DATA_SOURCE=Cluster0
-MONGODB_DATABASE=tsn_stock
-MONGODB_COLLECTION=stockSnapshots
-```
-
 Optional:
 
 ```txt
+MONGODB_DATABASE=tsn_stock
+MONGODB_COLLECTION=stockSnapshots
 TSN_STOCK_REFRESH_MS=20000
 TSN_STOCK_MAX_HISTORY=720
 ```
 
 `TSN_STOCK_MAX_HISTORY=720` means about 4 hours of 20-second snapshots. Increase it if you want a longer chart.
 
-## How to set up MongoDB Atlas Data API
+## Where to find `MONGODB_URI`
 
 1. Go to MongoDB Atlas.
-2. Open **App Services**.
-3. Create or open an App Services app connected to your Atlas cluster.
-4. Enable **Data API**.
-5. Create an API key.
-6. Copy the Data API endpoint URL into `MONGODB_DATA_API_URL`.
-7. Put the API key into `MONGODB_DATA_API_KEY`.
-8. Set `MONGODB_DATA_SOURCE` to your cluster name, often `Cluster0`.
-9. Use `MONGODB_DATABASE=tsn_stock` and `MONGODB_COLLECTION=stockSnapshots`.
+2. Open your project.
+3. Go to **Database**.
+4. Click **Connect** on your cluster.
+5. Choose **Drivers**.
+6. Copy the connection string.
+7. Replace `<password>` with your database user's password.
+8. Make sure the database name is included before the `?`, for example `/tsn_stock?retryWrites=true...`.
 
-## Why it does not use `MONGODB_URI`
+Example:
 
-This Render-fixed TSN Stock version avoids npm dependencies so Render does not get stuck at `npm install`. A normal `MONGODB_URI` needs the MongoDB Node driver package. The Atlas Data API works over HTTPS using built-in Node `fetch`, so the project stays dependency-free.
+```txt
+mongodb+srv://tsnuser:YOUR_PASSWORD@cluster0.xxxxx.mongodb.net/tsn_stock?retryWrites=true&w=majority
+```
+
+## Important MongoDB Atlas settings
+
+In Atlas, also check:
+
+- **Database Access**: your database user exists and has read/write permissions.
+- **Network Access**: allow Render to connect. For easiest setup, add `0.0.0.0/0` while testing.
+- Your password is URL-safe. If it has special characters, create a simpler MongoDB password or URL-encode it.
 
 ## Local setup
 
 ```bash
+npm install --omit=dev --no-audit --no-fund
 npm start
 ```
 

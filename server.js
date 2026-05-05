@@ -1,24 +1,28 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+let MongoClient = null;
+try {
+  ({ MongoClient } = require('mongodb'));
+} catch {
+  MongoClient = null;
+}
 
 const PORT = Number(process.env.PORT || 3010);
 const TSN_API_BASE_URL = String(process.env.TSN_API_BASE_URL || '').replace(/\/$/, '');
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
-// Optional MongoDB Atlas Data API persistence. This keeps the app dependency-free,
-// so Render does not have to install the MongoDB npm driver.
-const DATA_API_URL = String(process.env.MONGODB_DATA_API_URL || '')
-  .replace(/\/$/, '')
-  .replace(/\/action\/?$/, '');
-const DATA_API_KEY = String(process.env.MONGODB_DATA_API_KEY || '');
-const DATA_SOURCE = String(process.env.MONGODB_DATA_SOURCE || 'Cluster0');
+// Optional MongoDB Atlas persistence using the normal MongoDB connection string.
+// This is the same setup style as the original TSN app: MONGODB_URI.
+const MONGODB_URI = String(process.env.MONGODB_URI || '');
 const DATABASE = String(process.env.MONGODB_DATABASE || 'tsn_stock');
 const COLLECTION = String(process.env.MONGODB_COLLECTION || 'stockSnapshots');
 const MAX_HISTORY_POINTS = Number(process.env.TSN_STOCK_MAX_HISTORY || 720);
 const REFRESH_INTERVAL_MS = Number(process.env.TSN_STOCK_REFRESH_MS || 20000);
 
-const PERSISTENCE_ENABLED = Boolean(DATA_API_URL && DATA_API_KEY && DATA_SOURCE && DATABASE && COLLECTION);
+const PERSISTENCE_ENABLED = Boolean(MONGODB_URI);
+let mongoClient = null;
+let mongoCollection = null;
 
 let cachedPayload = null;
 let cachedAt = 0;
@@ -79,21 +83,20 @@ async function fetchJsonWithTimeout(url, options = {}, timeoutMs = 12000) {
   }
 }
 
-async function dataApiAction(action, body) {
-  if (!PERSISTENCE_ENABLED) throw new Error('MongoDB Data API is not configured');
-  return fetchJsonWithTimeout(`${DATA_API_URL}/action/${action}`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'api-key': DATA_API_KEY
-    },
-    body: JSON.stringify({
-      dataSource: DATA_SOURCE,
-      database: DATABASE,
-      collection: COLLECTION,
-      ...body
-    })
-  }, 12000);
+async function getMongoCollection() {
+  if (!PERSISTENCE_ENABLED) throw new Error('MONGODB_URI is not configured');
+  if (!MongoClient) throw new Error('MongoDB driver is not installed. Run npm install.');
+  if (mongoCollection) return mongoCollection;
+
+  mongoClient = new MongoClient(MONGODB_URI, {
+    serverSelectionTimeoutMS: 12000,
+    connectTimeoutMS: 12000,
+    maxPoolSize: 5
+  });
+  await mongoClient.connect();
+  mongoCollection = mongoClient.db(DATABASE).collection(COLLECTION);
+  await mongoCollection.createIndex({ createdAt: -1 });
+  return mongoCollection;
 }
 
 function normalizeSourceStock(data) {
@@ -146,22 +149,24 @@ function cleanHistory(documents) {
 
 async function loadHistory() {
   if (!PERSISTENCE_ENABLED) return cleanHistory(memoryHistory);
-  const result = await dataApiAction('find', {
-    filter: {},
-    sort: { createdAt: -1 },
-    limit: MAX_HISTORY_POINTS,
-    projection: {
-      _id: 0,
-      price: 1,
-      change: 1,
-      changePercent: 1,
-      trend: 1,
-      metrics: 1,
-      sourceUpdatedAt: 1,
-      createdAt: 1
-    }
-  });
-  return cleanHistory(result.documents || []);
+  const collection = await getMongoCollection();
+  const documents = await collection
+    .find({}, {
+      projection: {
+        _id: 0,
+        price: 1,
+        change: 1,
+        changePercent: 1,
+        trend: 1,
+        metrics: 1,
+        sourceUpdatedAt: 1,
+        createdAt: 1
+      }
+    })
+    .sort({ createdAt: -1 })
+    .limit(MAX_HISTORY_POINTS)
+    .toArray();
+  return cleanHistory(documents);
 }
 
 async function saveSnapshot(snapshot) {
@@ -170,8 +175,9 @@ async function saveSnapshot(snapshot) {
     memoryHistory = cleanHistory(memoryHistory);
     return { saved: false, mode: 'memory' };
   }
-  await dataApiAction('insertOne', { document: snapshot });
-  return { saved: true, mode: 'mongodb-data-api' };
+  const collection = await getMongoCollection();
+  await collection.insertOne(snapshot);
+  return { saved: true, mode: 'mongodb-uri' };
 }
 
 async function fetchOriginalStock() {
@@ -205,7 +211,7 @@ function buildPayload(stock, history, persistence, source = 'live') {
       })),
       persistence: {
         enabled: PERSISTENCE_ENABLED,
-        mode: persistence?.mode || (PERSISTENCE_ENABLED ? 'mongodb-data-api' : 'memory'),
+        mode: persistence?.mode || (PERSISTENCE_ENABLED ? 'mongodb-uri' : 'memory'),
         saved: Boolean(persistence?.saved),
         database: PERSISTENCE_ENABLED ? DATABASE : null,
         collection: PERSISTENCE_ENABLED ? COLLECTION : null
@@ -247,7 +253,7 @@ async function getStockPayload({ force = false } = {}) {
         updatedAt: last.createdAt,
         metrics: last.metrics || {},
         disclaimer: 'Fiktiv TSN-aktivitetspris. Viser seneste gemte datapunkt, fordi original TSN ikke kunne kontaktes.'
-      }, history, { saved: false, mode: PERSISTENCE_ENABLED ? 'mongodb-data-api' : 'memory' }, 'last-known');
+      }, history, { saved: false, mode: PERSISTENCE_ENABLED ? 'mongodb-uri' : 'memory' }, 'last-known');
       cachedAt = now;
       return cachedPayload;
     }
@@ -263,7 +269,7 @@ const server = http.createServer((req, res) => {
     return sendJson(res, 200, {
       ok: true,
       service: 'tsn-stock',
-      persistence: PERSISTENCE_ENABLED ? 'mongodb-data-api' : 'memory',
+      persistence: PERSISTENCE_ENABLED ? 'mongodb-uri' : 'memory',
       tsnApiConfigured: Boolean(TSN_API_BASE_URL)
     });
   }
@@ -283,7 +289,7 @@ const server = http.createServer((req, res) => {
     loadHistory()
       .then((history) => sendJson(res, 200, {
         ok: true,
-        persistence: PERSISTENCE_ENABLED ? 'mongodb-data-api' : 'memory',
+        persistence: PERSISTENCE_ENABLED ? 'mongodb-uri' : 'memory',
         history: history.map((point) => ({ price: point.price, createdAt: point.createdAt }))
       }))
       .catch((error) => sendJson(res, 500, { ok: false, error: error.message }));
@@ -322,11 +328,11 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, () => {
   console.log(`TSN Stock persistent server running on port ${PORT}`);
-  console.log(`Persistence: ${PERSISTENCE_ENABLED ? `MongoDB Data API (${DATABASE}.${COLLECTION})` : 'memory only'}`);
+  console.log(`Persistence: ${PERSISTENCE_ENABLED ? `MongoDB URI (${DATABASE}.${COLLECTION})` : 'memory only'}`);
   if (!TSN_API_BASE_URL) {
     console.warn('Missing TSN_API_BASE_URL. Set it to your original TSN website URL, for example https://your-tsn.onrender.com');
   }
   if (!PERSISTENCE_ENABLED) {
-    console.warn('MongoDB persistence is not configured. Set MONGODB_DATA_API_URL, MONGODB_DATA_API_KEY, MONGODB_DATA_SOURCE, MONGODB_DATABASE and MONGODB_COLLECTION.');
+    console.warn('MongoDB persistence is not configured. Set MONGODB_URI, plus optional MONGODB_DATABASE and MONGODB_COLLECTION.');
   }
 });
