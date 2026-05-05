@@ -26,6 +26,7 @@
         <h2 id="stockPrice">--,--</h2>
         <p id="stockChange" class="change flat">0,00 · 0,00%</p>
         <p class="disclaimer" id="stockDisclaimer">TSN Stock er fiktiv og er ikke en rigtig aktie.</p>
+        <p class="persistence-info" id="persistenceInfo">Tjekker MongoDB-lagring...</p>
       </article>
 
       <article class="card chart-card">
@@ -36,7 +37,11 @@
           </div>
           <button id="refreshButton" class="secondary" type="button">Opdater</button>
         </div>
-        <canvas id="stockChart" width="1100" height="360" aria-label="TSN Stock graf"></canvas>
+        <div class="chart-shell">
+          <canvas id="stockChart" width="1100" height="360" aria-label="TSN Stock graf"></canvas>
+          <div id="chartTooltip" class="chart-tooltip hidden"></div>
+        </div>
+        <p id="refreshInfo" class="refresh-info">Opdaterer automatisk hvert 20. sekund</p>
       </article>
     </section>
 
@@ -62,6 +67,7 @@
       <h2>Mangler forbindelse til TSN</h2>
       <p>Sæt miljøvariablen <code>TSN_API_BASE_URL</code> på TSN Stock Render-servicen til URL’en på din originale TSN hjemmeside.</p>
       <p>Eksempel: <code>https://din-tsn.onrender.com</code></p>
+      <p>For permanent grafhistorik skal MongoDB Data API miljøvariablerne også sættes.</p>
     </section>
   </main>
 

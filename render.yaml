@@ -16,3 +16,17 @@ services:
         value: "false"
       - key: TSN_API_BASE_URL
         sync: false
+      - key: MONGODB_DATA_API_URL
+        sync: false
+      - key: MONGODB_DATA_API_KEY
+        sync: false
+      - key: MONGODB_DATA_SOURCE
+        value: Cluster0
+      - key: MONGODB_DATABASE
+        value: tsn_stock
+      - key: MONGODB_COLLECTION
+        value: stockSnapshots
+      - key: TSN_STOCK_REFRESH_MS
+        value: "20000"
+      - key: TSN_STOCK_MAX_HISTORY
+        value: "720"
