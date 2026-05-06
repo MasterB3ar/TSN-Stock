@@ -2,7 +2,7 @@
 
 TSN-S is now a restricted dashboard for the normal TSN site. It is **not** a wallet/trading app anymore.
 
-## What changed in v1.2.0
+## What changed in v1.2.1
 
 - You must log in before the dashboard loads.
 - Only the normal TSN user with username `ceo` can log in.

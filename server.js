@@ -386,12 +386,17 @@ function isOriginalUserBanned(user) {
   return Boolean(user && user.bannedAt);
 }
 
+function getStableUserId(user) {
+  const raw = user?.id || user?._id || user?.userId || user?.uid || user?.sub || user?.username || user?.name || 'ceo';
+  return String(raw);
+}
+
 function signStockSession(user) {
   if (!jwt) throw new Error('jsonwebtoken is not installed.');
   return jwt.sign({
     iss: 'tsn-stock',
-    sub: String(user.id),
-    username: String(user.username || ''),
+    sub: getStableUserId(user),
+    username: String(user.username || user.name || ''),
     name: String(user.name || user.username || 'TSN User'),
     role: user.role || 'user',
     isAdmin: Boolean(user.isAdmin || user.role === 'admin')
@@ -402,10 +407,11 @@ function verifyStockSession(token) {
   if (!jwt || !token) return null;
   try {
     const payload = jwt.verify(token, STOCK_SESSION_SECRET);
-    if (payload?.iss !== 'tsn-stock' || !payload?.sub) return null;
+    if (payload?.iss !== 'tsn-stock') return null;
+    const username = String(payload.username || payload.name || 'tsn-user');
     return {
-      id: String(payload.sub),
-      username: String(payload.username || 'tsn-user'),
+      id: String(payload.sub || username || 'ceo'),
+      username,
       name: String(payload.name || payload.username || 'TSN User'),
       role: payload.role || 'user',
       isAdmin: Boolean(payload.isAdmin || payload.role === 'admin')
@@ -462,9 +468,10 @@ function getBearerToken(req) {
 }
 
 function publicTsnUser(user) {
+  const username = String(user?.username || user?.name || 'tsn-user');
   return {
-    id: String(user?.id || ''),
-    username: String(user?.username || user?.name || 'tsn-user'),
+    id: getStableUserId({ ...user, username }),
+    username,
     name: String(user?.name || user?.username || 'TSN User'),
     role: user?.role || 'user',
     isAdmin: Boolean(user?.isAdmin || user?.role === 'admin')

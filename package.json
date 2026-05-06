@@ -1,6 +1,6 @@
 {
   "name": "tsn-stock-standalone",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Restricted read-only TSN-S CEO dashboard with TSN login, price graphs, activity metrics, and no wallet or stock trading.",
   "main": "server.js",
   "scripts": {

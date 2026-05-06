@@ -1,4 +1,4 @@
-TSN-S v1.2.0 CEO-only read-only setup
+TSN-S v1.2.1 CEO-only read-only setup
 
 Render settings:
 Build Command: bash ./render-build.sh

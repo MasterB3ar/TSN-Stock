@@ -1,0 +1,15 @@
+TSN-S v1.2.1 — CEO Login Dashboard Fix
+
+Fixes a bug where TSN-S could show that the CEO user was logged in, but the dashboard stayed hidden.
+
+Cause:
+- Some normal TSN login responses do not include user.id.
+- TSN-S v1.2.0 required user.id before it would show the dashboard.
+
+Fix:
+- TSN-S now accepts id, _id, userId, uid, sub, or username as a stable user id.
+- The frontend no longer hides the dashboard just because user.id is missing.
+- The signed TSN-S session token now always gets a stable subject.
+- The account bar is cleaned up when logged in.
+
+Wallet and stock trading are still removed. Only the CEO read-only dashboard remains.
