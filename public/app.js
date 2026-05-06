@@ -19,7 +19,8 @@ const state = {
   chartRange: localStorage.getItem('tsnStockChartRange') || '10m',
   chartHistory: [],
   chartHistoryFetchedAt: 0,
-  chartHistoryTimer: null
+  chartHistoryTimer: null,
+  isTrading: false
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -515,6 +516,7 @@ async function tickWallet() {
 }
 
 async function trade(type) {
+  if (state.isTrading) return;
   if (!state.token) {
     const status = $('#tradeStatus');
     if (status) status.textContent = 'Log ind med din TSN-konto først.';
@@ -527,20 +529,27 @@ async function trade(type) {
     return;
   }
   if (status) status.textContent = type === 'buy' ? 'Køber...' : 'Sælger...';
+  state.isTrading = true;
+  document.querySelectorAll('#buyButton, #sellButton').forEach((button) => { button.disabled = true; });
 
-  const response = await fetchWithTimeout('/api/trade', {
-    method: 'POST',
-    headers: authHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify({ type, quantity }),
-    cache: 'no-store'
-  }, 12000);
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok || !data.ok) throw new Error(data.error || 'Handel fejlede');
-  renderWallet(data.wallet);
-  if (status) {
-    status.textContent = `${type === 'buy' ? 'Købt' : 'Solgt'} ${formatNumber(data.trade.quantity, 3)} TSN Stock for ${formatTsnm(data.trade.value)}.`;
+  try {
+    const response = await fetchWithTimeout('/api/trade', {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ type, quantity }),
+      cache: 'no-store'
+    }, 60000);
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.ok) throw new Error(data.error || 'Handel fejlede');
+    renderWallet(data.wallet);
+    if (status) {
+      status.textContent = `${type === 'buy' ? 'Købt' : 'Solgt'} ${formatNumber(data.trade.quantity, 3)} TSN Stock for ${formatTsnm(data.trade.value)}.`;
+    }
+    await fetchStock({ manual: true }).catch(() => {});
+  } finally {
+    state.isTrading = false;
+    document.querySelectorAll('#buyButton, #sellButton').forEach((button) => { button.disabled = false; });
   }
-  await fetchStock({ manual: true }).catch(() => {});
 }
 
 function startWalletRewards() {
@@ -588,6 +597,11 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
     return await fetch(url, { ...options, signal: controller.signal });
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      throw new Error(`Request timeout after ${Math.round(timeoutMs / 1000)}s. Render, MongoDB, or normal TSN was too slow to respond.`);
+    }
+    throw error;
   } finally {
     clearTimeout(timeout);
   }

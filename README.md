@@ -434,7 +434,7 @@ Then deploy with **Manual Deploy → Clear build cache & deploy**.
 
 Do not use `npm ci` for this package on Render. `npm ci` requires a lockfile and can reuse broken/internal package URLs.
 
-## v1.1.6 wallet loading fix
+## v1.1.7 wallet loading fix
 
 This version makes the TSNM wallet load independently from the normal TSN activity/stock source. Earlier versions could show a wallet loading failure if normal TSN was asleep, slow on Render, or if the stock-source request took longer than the frontend wallet timeout.
 
@@ -455,3 +455,16 @@ MONGODB_TRADE_COLLECTION=tsnMoneyTrades
 ```
 
 If `/api/wallet/test` says `memory`, the wallet is not permanent yet.
+
+
+## v1.1.7 buy/sell fetch-abort fix
+
+If the browser said `Fetch is aborted` when buying TSN Stock, the old frontend timeout was too short. Buying and selling now allow up to 60 seconds, and the backend no longer blocks trades on a forced live refresh from normal TSN. Trades use the best known/cached TSN-S price, then refresh the live price in the background.
+
+Debug endpoint after login:
+
+```txt
+/api/trade/test
+```
+
+If this works but buying still fails, check the Render logs for MongoDB write errors or insufficient TSNM balance.

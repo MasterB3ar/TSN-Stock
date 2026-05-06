@@ -1,0 +1,17 @@
+TSN-S v1.1.7 — Buy Fetch Abort Fix
+
+Problem:
+The browser showed “Fetch is aborted” when buying stock.
+
+Cause:
+The frontend gave /api/trade only 12 seconds, while the backend forced a live stock refresh from normal TSN before completing the trade. If normal TSN/Render/MongoDB was slow, the browser aborted the request.
+
+Fixes:
+- /api/trade frontend timeout increased to 60 seconds.
+- Buy/sell buttons are disabled while a trade is running to prevent double-click duplicate requests.
+- Frontend now shows a clearer timeout message instead of the raw AbortError.
+- Backend trades now use the best known/cached stock price and refresh normal TSN in the background.
+- Added /api/trade/test for debugging wallet + price readiness.
+
+Important:
+This does not make TSNM earnable in normal TSN. TSNM is still earned in TSN-S and spent in normal TSN.

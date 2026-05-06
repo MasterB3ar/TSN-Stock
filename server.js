@@ -95,6 +95,7 @@ let originalTsnMongoClient = null;
 
 let cachedPayload = null;
 let cachedAt = 0;
+let backgroundStockRefreshInFlight = null;
 let memoryHistory = [];
 
 const MIME_TYPES = {
@@ -629,10 +630,24 @@ function bestKnownStockPrice() {
   return Number(cachedPayload?.stock?.price) || Number(memoryHistory.at(-1)?.price) || TARGET_BASE_PRICE || 100;
 }
 
-async function getCurrentStockPrice({ force = true } = {}) {
+function refreshStockInBackground(reason = 'background') {
+  if (backgroundStockRefreshInFlight) return backgroundStockRefreshInFlight;
+  backgroundStockRefreshInFlight = getStockPayload({ force: true })
+    .catch((error) => {
+      console.error(`Background TSN Stock refresh failed (${reason}):`, error.message);
+      return null;
+    })
+    .finally(() => {
+      backgroundStockRefreshInFlight = null;
+    });
+  return backgroundStockRefreshInFlight;
+}
+
+async function getCurrentStockPrice({ force = false } = {}) {
   if (!force && cachedPayload?.stock?.price) return Number(cachedPayload.stock.price) || TARGET_BASE_PRICE || 100;
+  if (!force) return bestKnownStockPrice();
   try {
-    const payload = await getStockPayload({ force });
+    const payload = await getStockPayload({ force: true });
     return Number(payload?.stock?.price) || bestKnownStockPrice();
   } catch {
     return bestKnownStockPrice();
@@ -652,7 +667,8 @@ async function tradeStock({ playerId, playerName, type, quantity }) {
   if (qty > 1_000_000) throw new Error('Quantity is too large');
 
   const { wallet } = await rewardOnlineMinutes(playerId, playerName);
-  const price = await getCurrentStockPrice({ force: true });
+  const price = await getCurrentStockPrice({ force: false });
+  refreshStockInBackground('after-trade');
   const value = Number((qty * price).toFixed(2));
   const now = new Date().toISOString();
 
@@ -1571,6 +1587,30 @@ const server = http.createServer((req, res) => {
         wallet: publicWallet(result.wallet, result.price),
         trade: result.trade,
         fictional: true
+      }))
+      .catch((error) => sendJson(res, error.statusCode || 400, { ok: false, error: error.data?.error || error.message }));
+    return;
+  }
+
+  if (urlPath === '/api/trade/test') {
+    if (req.method !== 'GET') return sendJson(res, 405, { ok: false, error: 'Use GET for trade test.' });
+    walletForRequest(req)
+      .then(async (identity) => {
+        const wallet = await getWallet(identity.playerId, identity.playerName);
+        const price = await getCurrentStockPrice({ force: false });
+        return { identity, wallet, price };
+      })
+      .then(({ identity, wallet, price }) => sendJson(res, 200, {
+        ok: true,
+        user: identity.user,
+        playerId: identity.playerId,
+        price,
+        wallet: publicWallet(wallet, price),
+        canBuyOneShare: (Number(wallet.balance) || 0) >= price,
+        persistence: PERSISTENCE_ENABLED ? 'mongodb-uri' : 'memory',
+        walletDatabase: PERSISTENCE_ENABLED ? DATABASE : null,
+        walletCollection: WALLET_COLLECTION,
+        message: 'Trade route can read your wallet and find a usable stock price without waiting for normal TSN.'
       }))
       .catch((error) => sendJson(res, error.statusCode || 400, { ok: false, error: error.data?.error || error.message }));
     return;
