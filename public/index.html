@@ -3,163 +3,127 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>TSN Stock</title>
+  <title>TSN-S CEO Dashboard</title>
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
   <main class="shell">
-    <section class="hero card">
-      <div>
-        <p class="eyebrow">Standalone TSN sideprojekt</p>
-        <h1>TSN Stock</h1>
-        <p class="subtitle">En fiktiv live-pris baseret på aktivitet fra den originale TSN hjemmeside.</p>
-      </div>
-      <div class="hero-status-stack">
-        <div class="status-pill" id="connectionStatus">Forbinder...</div>
-        <div class="status-pill market-pill" id="marketStatus">Tjekker åbningstid...</div>
-      </div>
-    </section>
-
-    <section class="stock-layout">
-      <article class="price-card card">
-        <div class="price-topline">
-          <span class="symbol">TSN</span>
-          <span id="updatedAt">Ikke opdateret endnu</span>
-        </div>
-        <h2 id="stockPrice">--,--</h2>
-        <p id="stockChange" class="change flat">0,00 · 0,00%</p>
-        <p class="disclaimer" id="stockDisclaimer">TSN Stock er fiktiv og er ikke en rigtig aktie.</p>
-        <p class="persistence-info" id="persistenceInfo">Tjekker MongoDB-lagring...</p>
-      </article>
-
-      <article class="card chart-card">
-        <div class="section-head">
-          <div>
-            <p class="eyebrow">Prisgraf</p>
-            <h2>Live historik</h2>
-          </div>
-          <div class="chart-actions">
-            <button id="refreshButton" class="secondary" type="button">Opdater</button>
-          </div>
-        </div>
-        <div class="range-toolbar" aria-label="Vælg grafperiode">
-          <span id="chartRangeLabel">Viser: 10 minutter</span>
-          <div class="range-buttons">
-            <button type="button" data-chart-range="10m" class="range-button active">10 min</button>
-            <button type="button" data-chart-range="30m" class="range-button">30 min</button>
-            <button type="button" data-chart-range="1h" class="range-button">1 time</button>
-            <button type="button" data-chart-range="6h" class="range-button">6 timer</button>
-            <button type="button" data-chart-range="1d" class="range-button">1 dag</button>
-            <button type="button" data-chart-range="7d" class="range-button">7 dage</button>
-            <button type="button" data-chart-range="all" class="range-button">Alt</button>
-          </div>
-        </div>
-        <div class="chart-shell">
-          <canvas id="stockChart" width="1100" height="360" aria-label="TSN Stock graf"></canvas>
-          <div id="chartTooltip" class="chart-tooltip hidden"></div>
-        </div>
-        <p id="refreshInfo" class="refresh-info">Opdaterer automatisk og henter grafhistorik hvert 20. sekund</p>
-      </article>
-    </section>
-
-
-
-    <section class="auth-layout">
+    <section class="auth-layout" id="loginGate">
       <article id="authCard" class="card auth-card">
         <div class="section-head">
           <div>
-            <p class="eyebrow">Original TSN konto</p>
-            <h2>Log ind på TSN-S</h2>
+            <p class="eyebrow">Restricted TSN-S</p>
+            <h1>TSN-S</h1>
+            <p class="subtitle">Log ind med den normale TSN-konto. Kun brugernavnet <strong>ceo</strong> kan åbne dashboardet.</p>
           </div>
         </div>
-        <p class="small">Brug dit normale TSN-brugernavn og adgangskode. TSN-S spørger den originale TSN-server om login og gemmer din TSNM wallet på din TSN-konto.</p>
         <form id="loginForm" class="login-form">
           <label for="loginUsername">Brugernavn</label>
-          <input id="loginUsername" name="username" autocomplete="username" placeholder="Dit TSN-brugernavn" required />
+          <input id="loginUsername" name="username" autocomplete="username" placeholder="ceo" required />
           <label for="loginPassword">Adgangskode</label>
-          <input id="loginPassword" name="password" type="password" autocomplete="current-password" placeholder="Din TSN-adgangskode" required />
-          <button class="buy-button" type="submit">Log ind</button>
+          <input id="loginPassword" name="password" type="password" autocomplete="current-password" placeholder="TSN adgangskode" required />
+          <button class="primary-button" type="submit">Log ind</button>
         </form>
-        <p id="authStatus" class="small trade-status"></p>
+        <p id="authStatus" class="small info-status"></p>
+      </article>
+
+      <article id="deniedScreen" class="card access-denied-card hidden">
+        <p class="eyebrow">Restricted</p>
+        <h2>access denied</h2>
+        <p class="small">Denne TSN-S side kan kun åbnes af brugeren <strong>ceo</strong>.</p>
+        <button id="deniedBackButton" class="secondary" type="button" onclick="location.reload()">Tilbage til login</button>
       </article>
 
       <article id="accountCard" class="card account-card hidden">
         <div>
           <p class="eyebrow">Logget ind som</p>
-          <h2 id="accountName">TSN bruger</h2>
-          <p id="accountUser" class="small">Original TSN konto</p>
+          <h2 id="accountName">CEO</h2>
+          <p id="accountUser" class="small">@ceo · read-only dashboard</p>
         </div>
         <button id="logoutButton" class="secondary" type="button">Log ud</button>
       </article>
     </section>
 
-    <section id="moneySection" class="money-layout">
-      <article class="card money-card">
-        <div class="section-head">
-          <div>
-            <p class="eyebrow">TSN Money</p>
-            <h2>Din TSNM wallet</h2>
+    <section id="dashboardShell" class="hidden">
+      <section class="hero card">
+        <div>
+          <p class="eyebrow">Read-only dashboard</p>
+          <h1>TSN-S</h1>
+          <p class="subtitle">Pris, grafer og TSN aktivitet i et lukket read-only dashboard.</p>
+        </div>
+        <div class="hero-status-stack">
+          <div class="status-pill" id="connectionStatus">Forbinder...</div>
+          <div class="status-pill market-pill" id="marketStatus">Tjekker status...</div>
+        </div>
+      </section>
+
+      <section class="stock-layout">
+        <article class="price-card card">
+          <div class="price-topline">
+            <span class="symbol">TSN</span>
+            <span id="updatedAt">Ikke opdateret endnu</span>
           </div>
-          <span class="money-badge">+10 TSNM/min</span>
-        </div>
-        <div class="wallet-grid">
-          <div><span>Saldo</span><strong id="tsnmBalance">0,00 TSNM</strong></div>
-          <div><span>TSN Stock ejet</span><strong id="tsnShares">0</strong></div>
-          <div><span>Portefølje</span><strong id="portfolioValue">0,00 TSNM</strong></div>
-          <div><span>Net worth</span><strong id="netWorth">0,00 TSNM</strong></div>
-        </div>
-        <p id="walletLockText" class="small money-note">Log ind med din originale TSN-konto for at optjene TSNM og handle.</p>
-        <p id="rewardInfo" class="small money-note">Du får 10 TSNM for hvert minut, du er online på TSN Stock.</p>
-        <button id="walletTestButton" class="ghost-button small-button" type="button">Test wallet</button>
-        <p id="walletTestOutput" class="small money-note"></p>
-      </article>
+          <h2 id="stockPrice">--,--</h2>
+          <p id="stockChange" class="change flat">0,00 · 0,00%</p>
+          <p class="disclaimer" id="stockDisclaimer">TSN-S er fiktiv og er ikke en rigtig aktie.</p>
+          <p class="persistence-info" id="persistenceInfo">Tjekker MongoDB-lagring...</p>
+        </article>
 
-      <article id="tradeSection" class="card trade-card">
-        <div class="section-head">
-          <div>
-            <p class="eyebrow">Fiktiv trading</p>
-            <h2>Køb / sælg TSN Stock</h2>
+        <article class="card chart-card">
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">Prisgraf</p>
+              <h2>Live historik</h2>
+            </div>
+            <div class="chart-actions">
+              <button id="refreshButton" class="secondary" type="button">Opdater</button>
+            </div>
           </div>
+          <div class="range-toolbar" aria-label="Vælg grafperiode">
+            <span id="chartRangeLabel">Viser: 10 minutter</span>
+            <div class="range-buttons">
+              <button type="button" data-chart-range="10m" class="range-button active">10 min</button>
+              <button type="button" data-chart-range="30m" class="range-button">30 min</button>
+              <button type="button" data-chart-range="1h" class="range-button">1 time</button>
+              <button type="button" data-chart-range="6h" class="range-button">6 timer</button>
+              <button type="button" data-chart-range="1d" class="range-button">1 dag</button>
+              <button type="button" data-chart-range="7d" class="range-button">7 dage</button>
+              <button type="button" data-chart-range="all" class="range-button">Alt</button>
+            </div>
+          </div>
+          <div class="chart-shell">
+            <canvas id="stockChart" width="1100" height="360" aria-label="TSN-S prisgraf"></canvas>
+            <div id="chartTooltip" class="chart-tooltip hidden"></div>
+          </div>
+          <p id="refreshInfo" class="refresh-info">Opdaterer automatisk og henter grafhistorik hvert 20. sekund</p>
+        </article>
+      </section>
+
+      <section class="metrics-grid ceo-metrics-grid">
+        <div class="metric card"><strong id="onlineUsers">0</strong><span>Online nu</span></div>
+        <div class="metric card"><strong id="messagesHour">0</strong><span>Beskeder/time</span></div>
+        <div class="metric card"><strong id="globalChatsHour">0</strong><span>Global chats/time</span></div>
+      </section>
+
+      <section class="card formula-card">
+        <h2>Hvad TSN-S viser</h2>
+        <p>Dashboardet er read-only og viser kun pris, historik og aktivitetstal.</p>
+        <div class="formula-grid">
+          <div><strong>Pris</strong><span>Fiktiv TSN-S pris</span></div>
+          <div><strong>Grafer</strong><span>Historik fra TSN-S</span></div>
+          <div><strong>Aktivitet</strong><span>Online, beskeder/time og global chats/time</span></div>
         </div>
-        <label class="trade-label" for="tradeQuantity">Antal aktier</label>
-        <div class="trade-row">
-          <input id="tradeQuantity" type="number" min="0.001" step="0.001" value="1" inputmode="decimal" />
-          <button id="buyButton" class="buy-button" type="button">Køb</button>
-          <button id="sellButton" class="sell-button" type="button">Sælg</button>
-        </div>
-        <p id="marketHoursInfo" class="small trade-status">TSN-S trading åbningstider: 08:10-09:30 · 09:50-11:15 · 12:00-13:30.</p>
-        <p id="tradeEstimate" class="small">Pris: -- TSNM</p>
-        <p id="tradeStatus" class="small trade-status"></p>
-      </article>
-    </section>
+        <p class="small">Spam-beskyttelse er stadig aktiv, så én person ikke kan pumpe prisen med gentagne beskeder.</p>
+      </section>
 
-    <section class="metrics-grid">
-      <div class="metric card"><strong id="onlineUsers">0</strong><span>Online nu</span></div>
-      <div class="metric card"><strong id="messagesHour">0</strong><span>Beskeder/time</span></div>
-      <div class="metric card"><strong id="postsHour">0</strong><span>Opslag/time</span></div>
-      <div class="metric card"><strong id="activityScore">0</strong><span>Aktivitets-score</span></div>
-    </section>
-
-    <section class="card formula-card">
-      <h2>Hvordan prisen ændrer sig</h2>
-      <p>TSN Stock sammenligner aktiviteten lige nu med hvad der normalt forventes på det tidspunkt af dagen.</p>
-      <div class="formula-grid">
-        <div><strong>45%</strong><span>Online brugere</span></div>
-        <div><strong>30%</strong><span>Beskeder/time</span></div>
-        <div><strong>25%</strong><span>Opslag/time</span></div>
-      </div>
-      <p class="small">Spam-beskyttelse er aktiv: gentagne/overdrevne beskeder fra samme bruger bliver begrænset, så én person ikke kan pumpe aktiekursen op.</p>
-      <p class="small">Dette er kun en sjov intern TSN-score. TSNM er fiktive point, og TSN Stock er ikke en rigtig aktie eller finansiel rådgivning.</p>
-    </section>
-
-    <section id="setupHelp" class="setup-help card hidden">
-      <h2>Mangler forbindelse til TSN</h2>
-      <p>Sæt miljøvariablen <code>TSN_API_BASE_URL</code> på TSN-S Render-servicen til URL’en på din normale TSN hjemmeside.</p>
-      <p>Eksempel: <code>https://din-tsn.onrender.com</code></p>
-      <p>Brug ikke TSN-S URL’en her, og skriv ikke <code>/api</code> til sidst.</p>
-      <p>For permanent grafhistorik og TSNM-wallets skal <code>MONGODB_URI</code> sættes på TSN-S.</p>
-      <button id="sourceTestButton" class="ghost-button" type="button">Test TSN-forbindelse</button>
-      <pre id="sourceTestOutput" class="setup-output"></pre>
+      <section id="setupHelp" class="setup-help card hidden">
+        <h2>Mangler forbindelse til TSN</h2>
+        <p>Sæt miljøvariablen <code>TSN_API_BASE_URL</code> på TSN-S Render-servicen til URL’en på din normale TSN hjemmeside.</p>
+        <p>Eksempel: <code>https://din-tsn.onrender.com</code></p>
+        <p>Brug ikke TSN-S URL’en her, og skriv ikke <code>/api</code> til sidst.</p>
+        <button id="sourceTestButton" class="ghost-button" type="button">Test TSN-forbindelse</button>
+        <pre id="sourceTestOutput" class="setup-output"></pre>
+      </section>
     </section>
   </main>
 
