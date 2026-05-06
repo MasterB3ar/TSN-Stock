@@ -14,7 +14,10 @@
         <h1>TSN Stock</h1>
         <p class="subtitle">En fiktiv live-pris baseret på aktivitet fra den originale TSN hjemmeside.</p>
       </div>
-      <div class="status-pill" id="connectionStatus">Forbinder...</div>
+      <div class="hero-status-stack">
+        <div class="status-pill" id="connectionStatus">Forbinder...</div>
+        <div class="status-pill market-pill" id="marketStatus">Tjekker åbningstid...</div>
+      </div>
     </section>
 
     <section class="stock-layout">
@@ -37,7 +40,6 @@
           </div>
           <div class="chart-actions">
             <button id="refreshButton" class="secondary" type="button">Opdater</button>
-            <button id="resetButton" class="danger-button" type="button">Reset</button>
           </div>
         </div>
         <div class="range-toolbar" aria-label="Vælg grafperiode">
@@ -125,6 +127,7 @@
           <button id="buyButton" class="buy-button" type="button">Køb</button>
           <button id="sellButton" class="sell-button" type="button">Sælg</button>
         </div>
+        <p id="marketHoursInfo" class="small trade-status">TSN-S trading åbningstider: 08:10-09:30 · 09:50-11:15 · 12:00-13:30.</p>
         <p id="tradeEstimate" class="small">Pris: -- TSNM</p>
         <p id="tradeStatus" class="small trade-status"></p>
       </article>
@@ -145,6 +148,7 @@
         <div><strong>30%</strong><span>Beskeder/time</span></div>
         <div><strong>25%</strong><span>Opslag/time</span></div>
       </div>
+      <p class="small">Spam-beskyttelse er aktiv: gentagne/overdrevne beskeder fra samme bruger bliver begrænset, så én person ikke kan pumpe aktiekursen op.</p>
       <p class="small">Dette er kun en sjov intern TSN-score. TSNM er fiktive point, og TSN Stock er ikke en rigtig aktie eller finansiel rådgivning.</p>
     </section>
 

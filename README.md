@@ -38,13 +38,13 @@ TSN_API_BASE_URL=https://your-normal-tsn.onrender.com/api
 
 - Saves TSN Stock price snapshots whenever metrics change, checked about every 2 seconds.
 - Calculates the next price from the last MongoDB snapshot, so the number moves when TSN activity changes.
-- Uses a 100-base activity model: active users, messages, and posts can push the price up, but the stock has stronger gravity back toward 100 so it does not explode to 500+.
+- Uses a 100-base activity model with anti-spam filtering: active users, real messages, and real posts can push the price up, but one person spamming cannot pump the stock.
 - Loads old price history after restart/redeploy.
 - Keeps the Nordnet-style hover chart.
 - Uses the official `mongodb` Node package.
 - Falls back to temporary in-memory history if `MONGODB_URI` is not configured.
 - Keeps `/healthz` for uptime checks.
-- Adds a **Reset** button that clears stock history and starts the price from the reset baseline again.
+- Removes the public **Reset** button; reset is disabled by default so users cannot wipe chart history.
 - Adds **original TSN account login/logout** inside TSN-S.
 - TSN-S verifies sessions through the original TSN `/api/auth/login` and `/api/me` endpoints. API calls use retry/longer timeout so sleeping Render services have time to wake up.
 - Adds **TSNM wallets** persisted in MongoDB and tied to the original TSN user id.
@@ -84,6 +84,28 @@ TSN_STOCK_ACTIVITY_EPSILON=0.01
 TSN_STOCK_MAX_PRICE_MOVE_PER_TICK=1.25
 TSN_STOCK_DOWNTURN_STRENGTH=1
 TSN_STOCK_QUIET_DECAY_PER_TICK=0.08
+```
+
+
+## Anti-spam stock protection in v1.1.9
+
+TSN-S now filters activity before it affects the price. This means one user cannot spam comments/messages/posts to pump the stock.
+
+Protection rules:
+
+- Repeated identical messages from the same user inside 2 minutes are ignored.
+- A user can only contribute up to 8 counted messages/hour and 3 counted posts/hour by default.
+- If spam is detected and it is coming from only one contributor, TSN-S suppresses that message/post boost completely, so the stock does not go up from that spam.
+- The UI shows effective activity counts instead of raw spam counts.
+
+Optional environment variables:
+
+```env
+TSN_STOCK_ANTI_SPAM=true
+TSN_STOCK_SPAM_MESSAGE_CAP_PER_USER_PER_HOUR=8
+TSN_STOCK_SPAM_POST_CAP_PER_USER_PER_HOUR=3
+TSN_STOCK_SPAM_DUPLICATE_WINDOW_MS=120000
+TSN_STOCK_SPAM_MIN_UNIQUE_USERS_FOR_FULL_BOOST=2
 ```
 
 
@@ -206,7 +228,7 @@ GET /api/wallet?playerId=...
 POST /api/wallet/tick
 POST /api/trade
 GET /healthz
-POST /api/reset
+POST /api/reset  # disabled by default; returns 410 unless TSN_STOCK_ENABLE_RESET=true
 ```
 
 ## What affects the price?
@@ -236,7 +258,7 @@ MONGODB_WALLET_COLLECTION=tsnMoneyWallets
 MONGODB_TRADE_COLLECTION=tsnMoneyTrades
 ```
 
-With those defaults, if the newest saved price is above about `180`, TSN Stock automatically rebases history around `100`. You can also press the **Reset** button to clear history and start at 100.
+With those defaults, if the newest saved price is above about `180`, TSN Stock automatically rebases history around `100`. The public Reset button has been removed; history reset is disabled by default.
 
 
 ## If the number does not move
@@ -256,25 +278,18 @@ You can force a new snapshot by opening:
 ```
 
 
-## Reset button
+## Reset removed / disabled
 
-The chart page now has a **Reset** button next to **Opdater**.
+The chart page no longer has a public Reset button. The backend `/api/reset` route returns `410` by default. This prevents normal users from wiping stock history.
 
-When you press it, TSN Stock:
+Only enable reset temporarily if you are debugging as the site owner:
 
-- deletes the saved stock history from MongoDB,
-- clears temporary memory history,
-- creates one new baseline snapshot,
-- resets the visible price to `TSN_STOCK_RESET_PRICE` or `100` by default.
-
-For protection, set this optional Render environment variable:
-
-```txt
+```env
+TSN_STOCK_ENABLE_RESET=true
 TSN_STOCK_RESET_KEY=your-secret-reset-key
 ```
 
-If `TSN_STOCK_RESET_KEY` is set, the website asks for the key before resetting. If it is empty, the reset button works without a key.
-
+Keep `TSN_STOCK_ENABLE_RESET=false` on the public Render service.
 
 ## TSNM / trading system
 
@@ -468,3 +483,31 @@ Debug endpoint after login:
 ```
 
 If this works but buying still fails, check the Render logs for MongoDB write errors or insufficient TSNM balance.
+
+
+## v1.1.8 TSN-S opening hours
+
+TSN-S now has scheduled opening hours in the Europe/Copenhagen timezone by default. Users can still open the website and view their wallet/stock chart while closed, but buying, selling, and TSNM online-minute rewards are paused outside the open windows.
+
+Open windows:
+
+```txt
+08:10-09:30: TSN-S open
+09:30-09:50: TSN-S closed
+09:50-11:15: TSN-S open
+11:15-12:00: TSN-S closed
+12:00-13:30: TSN-S open
+13:30-08:10: TSN-S closed
+```
+
+Useful endpoint:
+
+```txt
+GET /api/market-hours
+```
+
+Optional env var:
+
+```txt
+TSN_STOCK_MARKET_TIMEZONE=Europe/Copenhagen
+```

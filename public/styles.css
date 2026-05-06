@@ -455,3 +455,39 @@ code { background: rgba(255,255,255,.08); border: 1px solid var(--border); borde
   padding: 0.55rem 0.8rem;
   font-size: 0.85rem;
 }
+
+.hero-status-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: flex-end;
+}
+
+.market-pill {
+  border-color: rgba(56, 217, 169, 0.30);
+}
+
+.market-pill.error {
+  border-color: rgba(255, 107, 107, 0.42);
+  background: rgba(255, 107, 107, 0.12);
+}
+
+.market-closed #tradeSection {
+  border-color: rgba(255, 107, 107, 0.35);
+}
+
+.market-closed #buyButton,
+.market-closed #sellButton {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.market-open-text { color: var(--accent-2); }
+.market-closed-text { color: var(--danger); }
+
+@media (max-width: 760px) {
+  .hero-status-stack {
+    width: 100%;
+    align-items: stretch;
+  }
+}

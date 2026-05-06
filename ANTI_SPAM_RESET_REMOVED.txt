@@ -1,0 +1,18 @@
+TSN-S v1.1.9 - Anti-spam stock protection + reset removed
+
+Changes:
+- Removed the Reset button from the TSN-S chart UI.
+- /api/reset is disabled by default and returns 410 unless TSN_STOCK_ENABLE_RESET=true.
+- Added anti-spam filtering before stock price calculation.
+- Repeated same-text messages from the same user inside TSN_STOCK_SPAM_DUPLICATE_WINDOW_MS are ignored.
+- Per-user contribution caps default to 8 messages/hour and 3 posts/hour.
+- If spam is detected from only one contributor, TSN-S suppresses the message/post boost completely so the stock does not go up from that spam.
+- The frontend shows raw/effective message and post counts in the stock disclaimer.
+
+Recommended Render env vars:
+TSN_STOCK_ENABLE_RESET=false
+TSN_STOCK_ANTI_SPAM=true
+TSN_STOCK_SPAM_MESSAGE_CAP_PER_USER_PER_HOUR=8
+TSN_STOCK_SPAM_POST_CAP_PER_USER_PER_HOUR=3
+TSN_STOCK_SPAM_DUPLICATE_WINDOW_MS=120000
+TSN_STOCK_SPAM_MIN_UNIQUE_USERS_FOR_FULL_BOOST=2

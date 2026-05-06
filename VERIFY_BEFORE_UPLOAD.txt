@@ -24,3 +24,11 @@ Wallet test after deploy:
 - Log in on TSN-S.
 - Press Test wallet or open /api/wallet/test.
 - It should say Wallet can load and save.
+
+TSN_STOCK_MARKET_TIMEZONE=Europe/Copenhagen
+
+
+Anti-spam check:
+- Reset button should NOT appear next to Opdater.
+- /api/reset should return 410 unless TSN_STOCK_ENABLE_RESET=true.
+- Spammy single-user message/post bursts should show raw/effective counts in the stock disclaimer and should not pump the price.

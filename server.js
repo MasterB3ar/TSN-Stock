@@ -68,6 +68,12 @@ const WALLET_COLLECTION = String(process.env.MONGODB_WALLET_COLLECTION || 'tsnMo
 const TRADE_COLLECTION = String(process.env.MONGODB_TRADE_COLLECTION || 'tsnMoneyTrades');
 const TSNM_EARN_PER_MINUTE = Number(process.env.TSNM_EARN_PER_MINUTE || 10);
 const TSNM_MAX_REWARD_MINUTES_PER_TICK = Number(process.env.TSNM_MAX_REWARD_MINUTES_PER_TICK || 30);
+const MARKET_TIMEZONE = String(process.env.TSN_STOCK_MARKET_TIMEZONE || process.env.TSN_MARKET_TIMEZONE || 'Europe/Copenhagen');
+const MARKET_WINDOWS = [
+  { start: '08:10', end: '09:30', label: 'Morning session' },
+  { start: '09:50', end: '11:15', label: 'Late-morning session' },
+  { start: '12:00', end: '13:30', label: 'Afternoon session' }
+];
 const MAX_HISTORY_POINTS = Number(process.env.TSN_STOCK_MAX_HISTORY || 302400); // 7 days at 2-second snapshots
 const STOCK_PAYLOAD_HISTORY_POINTS = Number(process.env.TSN_STOCK_PAYLOAD_HISTORY_POINTS || 720);
 const HISTORY_API_MAX_POINTS = Number(process.env.TSN_STOCK_HISTORY_API_MAX_POINTS || 1400);
@@ -85,6 +91,12 @@ const METRIC_ACTIVITY_EPSILON = Number(process.env.TSN_STOCK_ACTIVITY_EPSILON ||
 const MAX_PRICE_MOVE_PER_TICK = Number(process.env.TSN_STOCK_MAX_PRICE_MOVE_PER_TICK || 1.25);
 const DOWNTURN_STRENGTH = Number(process.env.TSN_STOCK_DOWNTURN_STRENGTH || 1);
 const QUIET_DECAY_PER_TICK = Number(process.env.TSN_STOCK_QUIET_DECAY_PER_TICK || 0.08);
+const ANTI_SPAM_ENABLED = String(process.env.TSN_STOCK_ANTI_SPAM || 'true').toLowerCase() !== 'false';
+const ANTI_SPAM_MESSAGE_CAP_PER_USER_PER_HOUR = Number(process.env.TSN_STOCK_SPAM_MESSAGE_CAP_PER_USER_PER_HOUR || 8);
+const ANTI_SPAM_POST_CAP_PER_USER_PER_HOUR = Number(process.env.TSN_STOCK_SPAM_POST_CAP_PER_USER_PER_HOUR || 3);
+const ANTI_SPAM_DUPLICATE_WINDOW_MS = Number(process.env.TSN_STOCK_SPAM_DUPLICATE_WINDOW_MS || 120000);
+const ANTI_SPAM_MIN_UNIQUE_USERS_FOR_FULL_BOOST = Number(process.env.TSN_STOCK_SPAM_MIN_UNIQUE_USERS_FOR_FULL_BOOST || 2);
+const RESET_ENABLED = String(process.env.TSN_STOCK_ENABLE_RESET || 'false').toLowerCase() === 'true';
 
 const PERSISTENCE_ENABLED = Boolean(MONGODB_URI);
 let mongoClient = null;
@@ -124,6 +136,127 @@ function send(res, statusCode, body, contentType = 'text/plain; charset=utf-8') 
 
 function sendJson(res, statusCode, payload) {
   send(res, statusCode, JSON.stringify(payload, null, 2), 'application/json; charset=utf-8');
+}
+
+
+function timeToMinutes(value) {
+  const [hours, minutes] = String(value || '00:00').split(':').map((part) => Number(part));
+  return clamp((Number.isFinite(hours) ? hours : 0) * 60 + (Number.isFinite(minutes) ? minutes : 0), 0, 1439);
+}
+
+function minutesToTime(minutes) {
+  const clean = ((Number(minutes) % 1440) + 1440) % 1440;
+  const hours = String(Math.floor(clean / 60)).padStart(2, '0');
+  const mins = String(clean % 60).padStart(2, '0');
+  return `${hours}:${mins}`;
+}
+
+function marketClock(date = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: MARKET_TIMEZONE,
+    hour12: false,
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    weekday: 'short',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).formatToParts(date).reduce((acc, part) => {
+    if (part.type !== 'literal') acc[part.type] = part.value;
+    return acc;
+  }, {});
+
+  const hour = Number(parts.hour) || 0;
+  const minute = Number(parts.minute) || 0;
+  const second = Number(parts.second) || 0;
+  return {
+    hour,
+    minute,
+    second,
+    minuteOfDay: hour * 60 + minute,
+    localTime: `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:${String(second).padStart(2, '0')}`,
+    localDate: `${parts.year}-${parts.month}-${parts.day}`,
+    weekday: parts.weekday || ''
+  };
+}
+
+function getMarketStatus(date = new Date()) {
+  const clock = marketClock(date);
+  const schedule = MARKET_WINDOWS.map((window) => ({
+    ...window,
+    startMinutes: timeToMinutes(window.start),
+    endMinutes: timeToMinutes(window.end)
+  }));
+  const activeWindow = schedule.find((window) => clock.minuteOfDay >= window.startMinutes && clock.minuteOfDay < window.endMinutes) || null;
+  const open = Boolean(activeWindow);
+
+  let nextMinute;
+  let nextStatus;
+  let nextLabel;
+  if (open) {
+    nextMinute = activeWindow.endMinutes;
+    nextStatus = 'closed';
+    nextLabel = `Closes at ${activeWindow.end}`;
+  } else {
+    const nextWindowToday = schedule.find((window) => clock.minuteOfDay < window.startMinutes);
+    if (nextWindowToday) {
+      nextMinute = nextWindowToday.startMinutes;
+      nextStatus = 'open';
+      nextLabel = `Opens at ${nextWindowToday.start}`;
+    } else {
+      nextMinute = schedule[0].startMinutes + 24 * 60;
+      nextStatus = 'open';
+      nextLabel = `Opens tomorrow at ${schedule[0].start}`;
+    }
+  }
+
+  const nowSecondOfDay = clock.minuteOfDay * 60 + clock.second;
+  const nextSecond = nextMinute * 60;
+  const secondsUntilNextChange = Math.max(0, nextSecond - nowSecondOfDay);
+
+  return {
+    open,
+    state: open ? 'open' : 'closed',
+    label: open ? 'TSN-S open' : 'TSN-S closed',
+    message: open
+      ? `Trading is open until ${activeWindow.end} (${MARKET_TIMEZONE}).`
+      : `Trading is closed. ${nextLabel} (${MARKET_TIMEZONE}).`,
+    timezone: MARKET_TIMEZONE,
+    localTime: clock.localTime,
+    localDate: clock.localDate,
+    activeWindow: activeWindow ? { start: activeWindow.start, end: activeWindow.end, label: activeWindow.label } : null,
+    nextStatus,
+    nextChangeAt: minutesToTime(nextMinute),
+    nextChangeLabel: nextLabel,
+    secondsUntilNextChange,
+    schedule: schedule.map((window) => ({ start: window.start, end: window.end, label: window.label }))
+  };
+}
+
+function makeMarketClosedError() {
+  const status = getMarketStatus();
+  const error = new Error(`${status.label}. ${status.nextChangeLabel}.`);
+  error.statusCode = 423;
+  error.marketStatus = status;
+  return error;
+}
+
+function countOpenRewardMinutesBetween(startMs, endMs) {
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return 0;
+  const fullMinutes = Math.floor((endMs - startMs) / 60_000);
+  if (fullMinutes <= 0) return 0;
+  const maxLookbackMinutes = Math.min(fullMinutes, 7 * 24 * 60);
+  const firstMinuteStart = endMs - maxLookbackMinutes * 60_000;
+  let openMinutes = 0;
+  for (let i = 0; i < maxLookbackMinutes; i += 1) {
+    const sampleAt = firstMinuteStart + i * 60_000 + 30_000;
+    if (getMarketStatus(new Date(sampleAt)).open) {
+      openMinutes += 1;
+      if (openMinutes >= Math.max(1, TSNM_MAX_REWARD_MINUTES_PER_TICK)) break;
+    }
+  }
+  return clamp(openMinutes, 0, Math.max(1, TSNM_MAX_REWARD_MINUTES_PER_TICK));
 }
 
 function safeStaticPath(urlPath) {
@@ -595,12 +728,29 @@ async function saveWallet(wallet) {
 }
 
 function calculateReward(wallet) {
+  const marketStatus = getMarketStatus();
   const nowMs = Date.now();
   const lastMs = Date.parse(wallet.lastRewardAt || wallet.createdAt || new Date().toISOString()) || nowMs;
-  const fullMinutes = Math.floor((nowMs - lastMs) / 60_000);
-  const cappedMinutes = clamp(fullMinutes, 0, Math.max(1, TSNM_MAX_REWARD_MINUTES_PER_TICK));
+
+  if (!marketStatus.open) {
+    return {
+      minutes: 0,
+      amount: 0,
+      nextRewardInMs: marketStatus.secondsUntilNextChange * 1000,
+      paused: true,
+      marketStatus
+    };
+  }
+
+  const cappedMinutes = countOpenRewardMinutesBetween(lastMs, nowMs);
   const amount = Number((cappedMinutes * TSNM_EARN_PER_MINUTE).toFixed(2));
-  return { minutes: cappedMinutes, amount, nextRewardInMs: Math.max(0, 60_000 - ((nowMs - lastMs) % 60_000)) };
+  return {
+    minutes: cappedMinutes,
+    amount,
+    nextRewardInMs: Math.max(0, 60_000 - ((nowMs - lastMs) % 60_000)),
+    paused: false,
+    marketStatus
+  };
 }
 
 async function rewardOnlineMinutes(playerId, playerName) {
@@ -611,6 +761,9 @@ async function rewardOnlineMinutes(playerId, playerName) {
     wallet.balance = Number((Number(wallet.balance || 0) + reward.amount).toFixed(2));
     wallet.totalEarned = Number((Number(wallet.totalEarned || 0) + reward.amount).toFixed(2));
     wallet.lastRewardAt = new Date(now.getTime() - (Date.now() - Date.parse(wallet.lastRewardAt || now.toISOString())) % 60_000).toISOString();
+    await saveWallet(wallet);
+  } else if (reward.paused) {
+    wallet.lastRewardAt = new Date().toISOString();
     await saveWallet(wallet);
   }
   return { wallet, reward };
@@ -665,6 +818,9 @@ async function tradeStock({ playerId, playerName, type, quantity }) {
   if (!['buy', 'sell'].includes(cleanType)) throw new Error('Trade type must be buy or sell');
   if (!Number.isFinite(qty) || qty <= 0) throw new Error('Quantity must be higher than 0');
   if (qty > 1_000_000) throw new Error('Quantity is too large');
+
+  const marketStatus = getMarketStatus();
+  if (!marketStatus.open) throw makeMarketClosedError();
 
   const { wallet } = await rewardOnlineMinutes(playerId, playerName);
   const price = await getCurrentStockPrice({ force: false });
@@ -722,6 +878,250 @@ function countSince(items, sinceMs, predicate = null) {
   }).length;
 }
 
+function normalizeSpamText(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/https?:\/\/\S+/g, ' link ')
+    .replace(/[^a-z0-9æøåäöüß]+/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 220);
+}
+
+function readTextField(item = {}) {
+  return item.text
+    || item.content
+    || item.body
+    || item.message
+    || item.comment
+    || item.caption
+    || item.title
+    || '';
+}
+
+function readActorId(item = {}, candidates = []) {
+  for (const key of candidates) {
+    if (item?.[key]) return String(item[key]);
+  }
+  if (item?.authorId) return String(item.authorId);
+  if (item?.userId) return String(item.userId);
+  if (item?.from) return String(item.from);
+  if (item?.senderId) return String(item.senderId);
+  if (item?.username) return String(item.username);
+  return 'unknown';
+}
+
+function buildAntiSpamStatsFromState(state, sinceMs) {
+  const events = [];
+  const pushEvent = (kind, item, actorCandidates, bucket) => {
+    const createdAt = new Date(item?.createdAt || item?.updatedAt || 0).getTime();
+    if (!Number.isFinite(createdAt) || createdAt < sinceMs) return;
+    events.push({
+      kind,
+      bucket,
+      createdAt,
+      actorId: readActorId(item, actorCandidates),
+      text: readTextField(item)
+    });
+  };
+
+  asArray(state.globalMessages).forEach((message) => {
+    pushEvent('post', message, ['authorId', 'userId', 'username'], 'globalPosts');
+    asArray(message?.comments).forEach((comment) => {
+      pushEvent('message', comment, ['authorId', 'userId', 'username'], 'globalComments');
+    });
+  });
+  asArray(state.messages).forEach((message) => {
+    pushEvent('message', message, ['from', 'authorId', 'senderId', 'userId', 'username'], 'privateMessages');
+  });
+
+  events.sort((a, b) => a.createdAt - b.createdAt);
+
+  const messageCap = Math.max(1, ANTI_SPAM_MESSAGE_CAP_PER_USER_PER_HOUR);
+  const postCap = Math.max(1, ANTI_SPAM_POST_CAP_PER_USER_PER_HOUR);
+  const duplicateWindowMs = Math.max(0, ANTI_SPAM_DUPLICATE_WINDOW_MS);
+  const seenTextAt = new Map();
+  const countedMessagesByUser = new Map();
+  const countedPostsByUser = new Map();
+  const messageUsers = new Set();
+  const postUsers = new Set();
+  const rawMessageUsers = new Set();
+  const rawPostUsers = new Set();
+
+  const stats = {
+    enabled: ANTI_SPAM_ENABLED,
+    rawMessagesPerHour: 0,
+    rawPrivateMessagesPerHour: 0,
+    rawGlobalCommentsPerHour: 0,
+    rawPostsPerHour: 0,
+    messagesPerHour: 0,
+    privateMessagesPerHour: 0,
+    globalCommentsPerHour: 0,
+    postsPerHour: 0,
+    ignoredDuplicateMessages: 0,
+    ignoredDuplicatePosts: 0,
+    ignoredOverLimitMessages: 0,
+    ignoredOverLimitPosts: 0
+  };
+
+  for (const event of events) {
+    const actorId = event.actorId || 'unknown';
+    const isPost = event.kind === 'post';
+    const text = normalizeSpamText(event.text);
+    const textKey = `${event.kind}:${actorId}:${text || '<empty>'}`;
+
+    if (isPost) {
+      stats.rawPostsPerHour += 1;
+      rawPostUsers.add(actorId);
+    } else {
+      stats.rawMessagesPerHour += 1;
+      rawMessageUsers.add(actorId);
+      if (event.bucket === 'privateMessages') stats.rawPrivateMessagesPerHour += 1;
+      if (event.bucket === 'globalComments') stats.rawGlobalCommentsPerHour += 1;
+    }
+
+    if (!ANTI_SPAM_ENABLED) {
+      if (isPost) {
+        stats.postsPerHour += 1;
+        postUsers.add(actorId);
+      } else {
+        stats.messagesPerHour += 1;
+        messageUsers.add(actorId);
+        if (event.bucket === 'privateMessages') stats.privateMessagesPerHour += 1;
+        if (event.bucket === 'globalComments') stats.globalCommentsPerHour += 1;
+      }
+      continue;
+    }
+
+    const lastSeen = seenTextAt.get(textKey) || 0;
+    if (text && duplicateWindowMs > 0 && lastSeen && event.createdAt - lastSeen < duplicateWindowMs) {
+      if (isPost) stats.ignoredDuplicatePosts += 1;
+      else stats.ignoredDuplicateMessages += 1;
+      continue;
+    }
+    seenTextAt.set(textKey, event.createdAt);
+
+    if (isPost) {
+      const previousCount = countedPostsByUser.get(actorId) || 0;
+      if (previousCount >= postCap) {
+        stats.ignoredOverLimitPosts += 1;
+        continue;
+      }
+      countedPostsByUser.set(actorId, previousCount + 1);
+      stats.postsPerHour += 1;
+      postUsers.add(actorId);
+    } else {
+      const previousCount = countedMessagesByUser.get(actorId) || 0;
+      if (previousCount >= messageCap) {
+        stats.ignoredOverLimitMessages += 1;
+        continue;
+      }
+      countedMessagesByUser.set(actorId, previousCount + 1);
+      stats.messagesPerHour += 1;
+      messageUsers.add(actorId);
+      if (event.bucket === 'privateMessages') stats.privateMessagesPerHour += 1;
+      if (event.bucket === 'globalComments') stats.globalCommentsPerHour += 1;
+    }
+  }
+
+  const uniqueMessageUsers = messageUsers.size;
+  const uniquePostUsers = postUsers.size;
+  const uniqueContributors = new Set([...messageUsers, ...postUsers]).size;
+  const rawUniqueContributors = new Set([...rawMessageUsers, ...rawPostUsers]).size;
+  const spamIgnored = stats.ignoredDuplicateMessages
+    + stats.ignoredDuplicatePosts
+    + stats.ignoredOverLimitMessages
+    + stats.ignoredOverLimitPosts;
+  const minUniqueUsersForFullBoost = Math.max(1, ANTI_SPAM_MIN_UNIQUE_USERS_FOR_FULL_BOOST);
+  const singleUserSpamSuppressed = ANTI_SPAM_ENABLED && spamIgnored > 0 && rawUniqueContributors < minUniqueUsersForFullBoost;
+  if (singleUserSpamSuppressed) {
+    stats.messagesPerHour = 0;
+    stats.privateMessagesPerHour = 0;
+    stats.globalCommentsPerHour = 0;
+    stats.postsPerHour = 0;
+  }
+
+  return {
+    ...stats,
+    uniqueMessageUsers,
+    uniquePostUsers,
+    uniqueContributors,
+    rawUniqueContributors,
+    spamIgnored,
+    spamDetected: spamIgnored > 0,
+    singleUserSpamSuppressed,
+    messageCapPerUserPerHour: messageCap,
+    postCapPerUserPerHour: postCap,
+    duplicateWindowMs,
+    minUniqueUsersForFullBoost
+  };
+}
+
+function applyMetricAntiSpam(metrics = {}) {
+  const rawMessagesPerHour = Math.max(0, Number(metrics.rawMessagesPerHour ?? metrics.messagesPerHour) || 0);
+  const rawPostsPerHour = Math.max(0, Number(metrics.rawPostsPerHour ?? metrics.postsPerHour) || 0);
+  const usersTotal = Math.max(1, Number(metrics.usersTotal) || Number(metrics.totalUsers) || Math.max(1, Number(metrics.onlineUsers) || 1));
+  const onlineUsers = Math.max(0, Number(metrics.onlineUsers) || 0);
+  const knownContributors = Math.max(
+    Number(metrics.uniqueContributors) || 0,
+    Number(metrics.uniqueMessageUsers) || 0,
+    Number(metrics.uniquePostUsers) || 0,
+    onlineUsers || 0,
+    1
+  );
+  const contributorBase = clamp(knownContributors, 1, usersTotal);
+  const messageCap = Math.max(1, ANTI_SPAM_MESSAGE_CAP_PER_USER_PER_HOUR) * contributorBase;
+  const postCap = Math.max(1, ANTI_SPAM_POST_CAP_PER_USER_PER_HOUR) * contributorBase;
+
+  let messagesPerHour = Math.max(0, Number(metrics.messagesPerHour) || 0);
+  let postsPerHour = Math.max(0, Number(metrics.postsPerHour) || 0);
+  let apiSpamLimitedMessages = 0;
+  let apiSpamLimitedPosts = 0;
+  let singleUserSpamSuppressed = Boolean(metrics.antiSpam?.singleUserSpamSuppressed);
+
+  if (ANTI_SPAM_ENABLED) {
+    const limitedMessages = Math.min(messagesPerHour, messageCap);
+    const limitedPosts = Math.min(postsPerHour, postCap);
+    apiSpamLimitedMessages = Math.max(0, messagesPerHour - limitedMessages);
+    apiSpamLimitedPosts = Math.max(0, postsPerHour - limitedPosts);
+    messagesPerHour = limitedMessages;
+    postsPerHour = limitedPosts;
+    const detectedApiSpam = apiSpamLimitedMessages > 0 || apiSpamLimitedPosts > 0 || Boolean(metrics.antiSpam?.spamDetected);
+    if (detectedApiSpam && contributorBase < Math.max(1, ANTI_SPAM_MIN_UNIQUE_USERS_FOR_FULL_BOOST)) {
+      messagesPerHour = 0;
+      postsPerHour = 0;
+      singleUserSpamSuppressed = true;
+    }
+  }
+
+  return {
+    ...metrics,
+    rawMessagesPerHour,
+    rawPostsPerHour,
+    messagesPerHour: Number(messagesPerHour.toFixed(3)),
+    postsPerHour: Number(postsPerHour.toFixed(3)),
+    antiSpam: {
+      ...(metrics.antiSpam || {}),
+      enabled: ANTI_SPAM_ENABLED,
+      source: metrics.antiSpam?.source || metrics.source || 'metrics',
+      contributorBase: Number(contributorBase.toFixed(3)),
+      messageCapPerUserPerHour: Math.max(1, ANTI_SPAM_MESSAGE_CAP_PER_USER_PER_HOUR),
+      postCapPerUserPerHour: Math.max(1, ANTI_SPAM_POST_CAP_PER_USER_PER_HOUR),
+      messageCapAppliedPerHour: Number(messageCap.toFixed(3)),
+      postCapAppliedPerHour: Number(postCap.toFixed(3)),
+      rawMessagesPerHour,
+      rawPostsPerHour,
+      effectiveMessagesPerHour: Number(messagesPerHour.toFixed(3)),
+      effectivePostsPerHour: Number(postsPerHour.toFixed(3)),
+      apiSpamLimitedMessages: Number(apiSpamLimitedMessages.toFixed(3)),
+      apiSpamLimitedPosts: Number(apiSpamLimitedPosts.toFixed(3)),
+      spamDetected: Boolean(metrics.antiSpam?.spamDetected || apiSpamLimitedMessages > 0 || apiSpamLimitedPosts > 0),
+      singleUserSpamSuppressed,
+      spamIgnored: Number(metrics.antiSpam?.spamIgnored || 0) + apiSpamLimitedMessages + apiSpamLimitedPosts
+    }
+  };
+}
+
 function getRecentActiveUserCount(state, sinceMs) {
   const activeIds = new Set();
   asArray(state.globalMessages).forEach((message) => {
@@ -750,10 +1150,11 @@ async function fetchOriginalStockFromMongo() {
   const recentActiveMs = nowMs - 5 * 60 * 1000;
   const users = asArray(state.users).filter((user) => !isOriginalUserBanned(user));
   const usersTotal = Math.max(1, users.length);
-  const privateMessagesPerHour = countSince(state.messages, hourAgoMs);
-  const globalCommentsPerHour = asArray(state.globalMessages).reduce((total, message) => total + countSince(message?.comments, hourAgoMs), 0);
-  const messagesPerHour = privateMessagesPerHour + globalCommentsPerHour;
-  const postsPerHour = countSince(state.globalMessages, hourAgoMs);
+  const antiSpamStats = buildAntiSpamStatsFromState(state, hourAgoMs);
+  const privateMessagesPerHour = antiSpamStats.privateMessagesPerHour;
+  const globalCommentsPerHour = antiSpamStats.globalCommentsPerHour;
+  const messagesPerHour = antiSpamStats.messagesPerHour;
+  const postsPerHour = antiSpamStats.postsPerHour;
   const onlineUsers = getRecentActiveUserCount(state, recentActiveMs);
   const expected = hourActivityCurve(now.getHours());
   const expectedOnline = Math.max(1, usersTotal * expected.online);
@@ -784,7 +1185,15 @@ async function fetchOriginalStockFromMongo() {
       expectedPostsPerHour: Number(expectedPostsPerHour.toFixed(2)),
       activityScore: Number(activityScore.toFixed(3)),
       source: 'original-tsn-mongodb-fallback',
-      onlineUsersMode: 'recent-active-5-minutes'
+      onlineUsersMode: 'recent-active-5-minutes',
+      rawMessagesPerHour: antiSpamStats.rawMessagesPerHour,
+      rawPrivateMessagesPerHour: antiSpamStats.rawPrivateMessagesPerHour,
+      rawGlobalCommentsPerHour: antiSpamStats.rawGlobalCommentsPerHour,
+      rawPostsPerHour: antiSpamStats.rawPostsPerHour,
+      uniqueMessageUsers: antiSpamStats.uniqueMessageUsers,
+      uniquePostUsers: antiSpamStats.uniquePostUsers,
+      uniqueContributors: antiSpamStats.uniqueContributors,
+      antiSpam: { ...antiSpamStats, source: 'original-tsn-mongodb-fallback' }
     },
     disclaimer: 'Fiktiv TSN-aktivitetspris. Aktivitet hentet direkte fra original TSN MongoDB.'
   };
@@ -794,18 +1203,23 @@ function normalizeSourceStock(data) {
   const stock = data?.stock || data;
   if (!stock || typeof stock !== 'object') throw new Error('Original TSN API did not return stock data');
   const now = new Date().toISOString();
+  const sourceMetrics = stock.metrics && typeof stock.metrics === 'object' ? stock.metrics : {};
+  const metrics = applyMetricAntiSpam({
+    ...sourceMetrics,
+    onlineUsers: Number(sourceMetrics.onlineUsers) || 0,
+    usersTotal: Number(sourceMetrics.usersTotal || sourceMetrics.totalUsers) || undefined,
+    messagesPerHour: Number(sourceMetrics.messagesPerHour) || 0,
+    postsPerHour: Number(sourceMetrics.postsPerHour) || 0,
+    activityScore: Number(sourceMetrics.activityScore) || 0,
+    source: sourceMetrics.source || 'original-tsn-api'
+  });
   return {
     price: Number(stock.price) || 100,
     change: Number(stock.change) || 0,
     changePercent: Number(stock.changePercent) || 0,
     trend: stock.trend || 'flat',
     updatedAt: stock.updatedAt || now,
-    metrics: {
-      onlineUsers: Number(stock.metrics?.onlineUsers) || 0,
-      messagesPerHour: Number(stock.metrics?.messagesPerHour) || 0,
-      postsPerHour: Number(stock.metrics?.postsPerHour) || 0,
-      activityScore: Number(stock.metrics?.activityScore) || 0
-    },
+    metrics,
     disclaimer: stock.disclaimer || 'Fiktiv TSN-aktivitetspris. Ikke en rigtig aktie.'
   };
 }
@@ -841,13 +1255,14 @@ function clamp(number, min, max) {
 }
 
 function normalizeMetrics(metrics = {}) {
+  const protectedMetrics = applyMetricAntiSpam(metrics);
   const now = new Date();
-  const hour = Number.isFinite(Number(metrics.hour)) ? Number(metrics.hour) : now.getHours();
+  const hour = Number.isFinite(Number(protectedMetrics.hour)) ? Number(protectedMetrics.hour) : now.getHours();
   const curve = hourActivityCurve(hour);
-  const usersTotal = Math.max(1, Number(metrics.usersTotal) || Number(metrics.totalUsers) || Math.max(1, Number(metrics.onlineUsers) || 1));
-  const onlineUsers = Math.max(0, Number(metrics.onlineUsers) || 0);
-  const messagesPerHour = Math.max(0, Number(metrics.messagesPerHour) || 0);
-  const postsPerHour = Math.max(0, Number(metrics.postsPerHour) || 0);
+  const usersTotal = Math.max(1, Number(protectedMetrics.usersTotal) || Number(protectedMetrics.totalUsers) || Math.max(1, Number(protectedMetrics.onlineUsers) || 1));
+  const onlineUsers = Math.max(0, Number(protectedMetrics.onlineUsers) || 0);
+  const messagesPerHour = Math.max(0, Number(protectedMetrics.messagesPerHour) || 0);
+  const postsPerHour = Math.max(0, Number(protectedMetrics.postsPerHour) || 0);
   const expectedOnline = Math.max(1, Number(metrics.expectedOnline) || usersTotal * curve.online);
   const expectedMessagesPerHour = Math.max(1, Number(metrics.expectedMessagesPerHour) || usersTotal * 3.2 * curve.messages);
   const expectedPostsPerHour = Math.max(1, Number(metrics.expectedPostsPerHour) || usersTotal * 0.9 * curve.posts);
@@ -859,10 +1274,11 @@ function normalizeMetrics(metrics = {}) {
   // look like it could not pass 3,500 activity points. Keep the raw score uncapped
   // for display/history, then use a separate softened value for price movement.
   const calculatedActivityScore = Math.max(0, onlineRatio * 0.45 + messageRatio * 0.30 + postRatio * 0.25);
-  const sourceActivityScore = Number(metrics.activityScore);
-  const activityScore = Number.isFinite(sourceActivityScore) && sourceActivityScore > 0
-    ? Math.max(sourceActivityScore, calculatedActivityScore)
-    : calculatedActivityScore;
+  // The price engine intentionally uses the anti-spam-adjusted score instead of
+  // trusting a raw source activityScore. One spammer can raise raw message counts,
+  // but the effective score below is capped before it can move the stock.
+  const sourceActivityScore = Number(protectedMetrics.activityScore);
+  const activityScore = calculatedActivityScore;
   const activityPoints = Math.max(0, Math.round(activityScore * Math.max(1, ACTIVITY_SCORE_POINTS_MULTIPLIER)));
   const priceActivityScore = clamp(
     Math.log1p(activityScore) / Math.log(2),
@@ -871,7 +1287,7 @@ function normalizeMetrics(metrics = {}) {
   );
 
   return {
-    ...metrics,
+    ...protectedMetrics,
     onlineUsers,
     usersTotal,
     messagesPerHour,
@@ -883,6 +1299,7 @@ function normalizeMetrics(metrics = {}) {
     onlineRatio: Number(onlineRatio.toFixed(4)),
     messageRatio: Number(messageRatio.toFixed(4)),
     postRatio: Number(postRatio.toFixed(4)),
+    sourceActivityScore: Number.isFinite(sourceActivityScore) ? Number(sourceActivityScore.toFixed(3)) : 0,
     activityScore: Number(activityScore.toFixed(3)),
     activityPoints,
     priceActivityScore: Number(priceActivityScore.toFixed(3))
@@ -1337,7 +1754,8 @@ function buildPayload(stock, history, persistence, source = 'live') {
         database: PERSISTENCE_ENABLED ? DATABASE : null,
         collection: PERSISTENCE_ENABLED ? COLLECTION : null
       },
-      source
+      source,
+      market: getMarketStatus()
     }
   };
 }
@@ -1408,11 +1826,13 @@ const server = http.createServer((req, res) => {
     return sendJson(res, 200, {
       ok: true,
       service: 'tsn-stock',
-      resetEnabled: true,
+      resetEnabled: RESET_ENABLED,
       resetRequiresKey: Boolean(RESET_KEY),
       targetBasePrice: TARGET_BASE_PRICE,
       autoRebaseEnabled: AUTO_REBASE_ENABLED,
+      antiSpam: { enabled: ANTI_SPAM_ENABLED, messageCapPerUserPerHour: ANTI_SPAM_MESSAGE_CAP_PER_USER_PER_HOUR, postCapPerUserPerHour: ANTI_SPAM_POST_CAP_PER_USER_PER_HOUR, duplicateWindowMs: ANTI_SPAM_DUPLICATE_WINDOW_MS },
       persistence: PERSISTENCE_ENABLED ? 'mongodb-uri' : 'memory',
+      marketStatus: getMarketStatus(),
       tsnMoney: { earnPerMinute: TSNM_EARN_PER_MINUTE, walletCollection: WALLET_COLLECTION, tradeCollection: TRADE_COLLECTION, walletDatabase: PERSISTENCE_ENABLED ? DATABASE : null, walletPersistence: PERSISTENCE_ENABLED ? 'mongodb-uri' : 'memory' },
       tsnApiConfigured: Boolean(TSN_API_BASE_URL),
       tsnApiEnvName: TSN_API_ENV.name || null,
@@ -1481,6 +1901,11 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  if (urlPath === '/api/market-hours') {
+    if (req.method !== 'GET') return sendJson(res, 405, { ok: false, error: 'Use GET for market hours.' });
+    return sendJson(res, 200, { ok: true, market: getMarketStatus(), fictional: true });
+  }
+
   if (urlPath === '/api/stock') {
     getStockPayload({ force: url.searchParams.get('force') === '1' })
       .then((payload) => sendJson(res, 200, payload))
@@ -1507,6 +1932,7 @@ const server = http.createServer((req, res) => {
         persistence: PERSISTENCE_ENABLED ? 'mongodb-uri' : 'memory',
         walletDatabase: PERSISTENCE_ENABLED ? DATABASE : null,
         walletCollection: WALLET_COLLECTION,
+        market: getMarketStatus(),
         fictional: true
       }))
       .catch((error) => sendJson(res, error.statusCode || 400, { ok: false, error: error.data?.error || error.message }));
@@ -1526,9 +1952,10 @@ const server = http.createServer((req, res) => {
         persistence: PERSISTENCE_ENABLED ? 'mongodb-uri' : 'memory',
         walletDatabase: PERSISTENCE_ENABLED ? DATABASE : null,
         walletCollection: WALLET_COLLECTION,
+        market: result.reward.marketStatus || getMarketStatus(),
         fictional: true
       }))
-      .catch((error) => sendJson(res, error.statusCode || 400, { ok: false, error: error.data?.error || error.message }));
+      .catch((error) => sendJson(res, error.statusCode || 400, { ok: false, error: error.data?.error || error.message, market: getMarketStatus() }));
     return;
   }
 
@@ -1564,6 +1991,7 @@ const server = http.createServer((req, res) => {
         databaseWriteOk,
         databaseError,
         wallet: publicWallet(wallet, bestKnownStockPrice()),
+        market: getMarketStatus(),
         message: databaseWriteOk
           ? 'Wallet can load and save.'
           : 'Wallet loaded, but MongoDB write failed. Check MONGODB_URI and database permissions.'
@@ -1586,9 +2014,10 @@ const server = http.createServer((req, res) => {
         user: identity.user,
         wallet: publicWallet(result.wallet, result.price),
         trade: result.trade,
+        market: getMarketStatus(),
         fictional: true
       }))
-      .catch((error) => sendJson(res, error.statusCode || 400, { ok: false, error: error.data?.error || error.message }));
+      .catch((error) => sendJson(res, error.statusCode || 400, { ok: false, error: error.data?.error || error.message, market: error.marketStatus || getMarketStatus() }));
     return;
   }
 
@@ -1606,6 +2035,8 @@ const server = http.createServer((req, res) => {
         playerId: identity.playerId,
         price,
         wallet: publicWallet(wallet, price),
+        canTradeNow: getMarketStatus().open,
+        market: getMarketStatus(),
         canBuyOneShare: (Number(wallet.balance) || 0) >= price,
         persistence: PERSISTENCE_ENABLED ? 'mongodb-uri' : 'memory',
         walletDatabase: PERSISTENCE_ENABLED ? DATABASE : null,
@@ -1651,6 +2082,9 @@ const server = http.createServer((req, res) => {
   }
 
   if (urlPath === '/api/reset') {
+    if (!RESET_ENABLED) {
+      return sendJson(res, 410, { ok: false, error: 'Reset is disabled in this TSN-S version.' });
+    }
     if (req.method !== 'POST') {
       return sendJson(res, 405, { ok: false, error: 'Use POST to reset TSN Stock.' });
     }
@@ -1670,13 +2104,16 @@ const server = http.createServer((req, res) => {
       `window.TSN_STOCK_CONFIG = ${JSON.stringify({
         refreshIntervalMs: REFRESH_INTERVAL_MS,
         persistenceEnabled: PERSISTENCE_ENABLED,
+        resetEnabled: RESET_ENABLED,
         resetRequiresKey: Boolean(RESET_KEY),
         targetBasePrice: TARGET_BASE_PRICE,
         autoRebaseEnabled: AUTO_REBASE_ENABLED,
         tsnmEarnPerMinute: TSNM_EARN_PER_MINUTE,
         historyApiMaxPoints: HISTORY_API_MAX_POINTS,
         storedHistoryPoints: MAX_HISTORY_POINTS,
-        stockPayloadHistoryPoints: STOCK_PAYLOAD_HISTORY_POINTS
+        stockPayloadHistoryPoints: STOCK_PAYLOAD_HISTORY_POINTS,
+        marketHours: getMarketStatus(),
+        antiSpam: { enabled: ANTI_SPAM_ENABLED, messageCapPerUserPerHour: ANTI_SPAM_MESSAGE_CAP_PER_USER_PER_HOUR, postCapPerUserPerHour: ANTI_SPAM_POST_CAP_PER_USER_PER_HOUR }
       })};`,
       'application/javascript; charset=utf-8'
     );

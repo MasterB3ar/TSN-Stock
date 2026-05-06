@@ -1,7 +1,7 @@
 {
   "name": "tsn-stock-standalone",
-  "version": "1.1.7",
-  "description": "Standalone TSN-S / TSN Stock with TSN account login, TSNM trading, MongoDB persistence, chart ranges, shared wallet support, Render-safe npm install settings, robust normal-TSN connection handling, non-blocking TSNM wallet loading, and buy/sell fetch-abort protection.",
+  "version": "1.1.9",
+  "description": "Standalone TSN-S / TSN Stock with TSN login, TSNM trading, MongoDB persistence, market hours, anti-spam stock pricing, and no public reset button.",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",

@@ -13,6 +13,7 @@ const state = {
   lastFetchFailed: false,
   isFetching: false,
   wallet: null,
+  market: config.marketHours || null,
   walletTimer: null,
   token: localStorage.getItem('tsnStockToken') || '',
   user: null,
@@ -42,6 +43,7 @@ function renderAuth() {
   $('#accountCard')?.classList.toggle('hidden', !loggedIn);
   $('#moneySection')?.classList.toggle('locked', !loggedIn);
   $('#tradeSection')?.classList.toggle('locked', !loggedIn);
+  if (state.market) renderMarketStatus(state.market);
 
   const name = state.user?.name || state.user?.username || 'TSN bruger';
   const username = state.user?.username ? `@${state.user.username}` : '';
@@ -158,6 +160,50 @@ function setStatus(text, mode = '') {
   if (!el) return;
   el.textContent = text;
   el.className = `status-pill ${mode}`.trim();
+}
+
+function formatMarketCountdown(seconds) {
+  const clean = Math.max(0, Number(seconds) || 0);
+  const hours = Math.floor(clean / 3600);
+  const minutes = Math.floor((clean % 3600) / 60);
+  if (hours > 0) return `${hours}t ${minutes}m`;
+  return `${Math.max(1, minutes)}m`;
+}
+
+function renderMarketStatus(market) {
+  if (!market) return;
+  state.market = market;
+  const open = Boolean(market.open);
+  const pill = $('#marketStatus');
+  if (pill) {
+    pill.textContent = open ? `TSN-S åben · lukker ${market.nextChangeAt}` : `TSN-S lukket · åbner ${market.nextChangeAt}`;
+    pill.className = `status-pill market-pill ${open ? 'connected' : 'error'}`;
+  }
+  const info = $('#marketHoursInfo');
+  if (info) {
+    const schedule = Array.isArray(market.schedule)
+      ? market.schedule.map((item) => `${item.start}-${item.end}`).join(' · ')
+      : '08:10-09:30 · 09:50-11:15 · 12:00-13:30';
+    info.textContent = open
+      ? `Markedet er åbent. Det lukker kl. ${market.nextChangeAt}. Åbningstider: ${schedule}.`
+      : `Markedet er lukket. Det åbner kl. ${market.nextChangeAt} om ca. ${formatMarketCountdown(market.secondsUntilNextChange)}. Åbningstider: ${schedule}.`;
+    info.className = `small trade-status ${open ? 'market-open-text' : 'market-closed-text'}`;
+  }
+  document.body.classList.toggle('market-closed', !open);
+  document.body.classList.toggle('market-open', open);
+  document.querySelectorAll('#buyButton, #sellButton').forEach((button) => {
+    button.disabled = state.isTrading || !open;
+  });
+  const estimate = $('#tradeEstimate');
+  if (estimate && !open) {
+    estimate.textContent = `Trading er lukket. Næste åbning: ${market.nextChangeAt}.`;
+  }
+}
+
+async function fetchMarketHours() {
+  const response = await fetchWithTimeout('/api/market-hours', { cache: 'no-store' }, 12000);
+  const data = await response.json().catch(() => ({}));
+  if (response.ok && data.ok) renderMarketStatus(data.market);
 }
 
 function rangeToMs(range) {
@@ -472,6 +518,8 @@ function renderWallet(wallet) {
   if (rewardInfo) {
     if (reward?.minutes > 0) {
       rewardInfo.textContent = `Du fik +${formatNumber(reward.amount, 0)} TSNM for ${reward.minutes} online minut${reward.minutes === 1 ? '' : 'ter'}.`;
+    } else if (reward?.paused || state.market?.open === false) {
+      rewardInfo.textContent = 'TSNM optjening er pauset, fordi TSN-S er lukket.';
     } else {
       const seconds = Math.max(1, Math.ceil((reward?.nextRewardInMs || 60000) / 1000));
       rewardInfo.textContent = `Du får ${Number(config.tsnmEarnPerMinute || 10)} TSNM pr. online minut. Næste reward om ca. ${seconds}s.`;
@@ -484,7 +532,13 @@ function updateTradeEstimate() {
   const price = Number(state.stock?.price || 0);
   const estimate = qty > 0 && price > 0 ? qty * price : 0;
   const el = $('#tradeEstimate');
-  if (el) el.textContent = `Estimeret handelsværdi: ${formatTsnm(estimate)} ved kurs ${formatNumber(price)}.`;
+  if (el) {
+    if (state.market?.open === false) {
+      el.textContent = `Trading er lukket. Næste åbning: ${state.market.nextChangeAt}.`;
+    } else {
+      el.textContent = `Estimeret handelsværdi: ${formatTsnm(estimate)} ved kurs ${formatNumber(price)}.`;
+    }
+  }
 }
 
 async function fetchWallet() {
@@ -498,6 +552,7 @@ async function fetchWallet() {
     if (rewardInfo) rewardInfo.textContent = message;
     throw new Error(message);
   }
+  renderMarketStatus(data.market);
   renderWallet(data.wallet);
   updateTradeEstimate();
 }
@@ -512,6 +567,7 @@ async function tickWallet() {
   }, 30000);
   const data = await response.json().catch(() => ({}));
   if (!response.ok || !data.ok) throw new Error(data.error || 'Kunne ikke opdatere TSNM wallet');
+  renderMarketStatus(data.market);
   renderWallet(data.wallet);
 }
 
@@ -520,6 +576,11 @@ async function trade(type) {
   if (!state.token) {
     const status = $('#tradeStatus');
     if (status) status.textContent = 'Log ind med din TSN-konto først.';
+    return;
+  }
+  if (state.market?.open === false) {
+    const status = $('#tradeStatus');
+    if (status) status.textContent = `TSN-S er lukket. Du kan handle igen kl. ${state.market.nextChangeAt}.`;
     return;
   }
   const quantity = Number($('#tradeQuantity')?.value || 0);
@@ -540,6 +601,7 @@ async function trade(type) {
       cache: 'no-store'
     }, 60000);
     const data = await response.json().catch(() => ({}));
+    renderMarketStatus(data.market);
     if (!response.ok || !data.ok) throw new Error(data.error || 'Handel fejlede');
     renderWallet(data.wallet);
     if (status) {
@@ -548,7 +610,11 @@ async function trade(type) {
     await fetchStock({ manual: true }).catch(() => {});
   } finally {
     state.isTrading = false;
-    document.querySelectorAll('#buyButton, #sellButton').forEach((button) => { button.disabled = false; });
+    if (state.market) {
+      renderMarketStatus(state.market);
+    } else {
+      document.querySelectorAll('#buyButton, #sellButton').forEach((button) => { button.disabled = false; });
+    }
   }
 }
 
@@ -564,6 +630,7 @@ function startWalletRewards() {
 function renderStock(stock) {
   state.stock = stock;
   if (!stock) return;
+  renderMarketStatus(stock.market);
 
   $('#stockPrice').textContent = formatNumber(stock.price);
   const change = $('#stockChange');
@@ -571,7 +638,12 @@ function renderStock(stock) {
   change.className = `change ${trend}`;
   change.textContent = `${formatSigned(stock.change)} · ${Number(stock.changePercent || 0) > 0 ? '+' : ''}${formatNumber(stock.changePercent)}%`;
   $('#updatedAt').textContent = `Opdateret ${formatTime(stock.updatedAt)}`;
-  $('#stockDisclaimer').textContent = stock.disclaimer || 'Fiktiv TSN-aktivitetspris. Ikke en rigtig aktie.';
+  const metrics = stock.metrics || {};
+  const antiSpam = metrics.antiSpam || {};
+  const spamSuffix = antiSpam.enabled
+    ? ` Spamfilter: ${formatNumber(antiSpam.effectiveMessagesPerHour ?? metrics.messagesPerHour ?? 0, 0)}/${formatNumber(antiSpam.rawMessagesPerHour ?? metrics.messagesPerHour ?? 0, 0)} beskeder og ${formatNumber(antiSpam.effectivePostsPerHour ?? metrics.postsPerHour ?? 0, 0)}/${formatNumber(antiSpam.rawPostsPerHour ?? metrics.postsPerHour ?? 0, 0)} opslag tæller.${antiSpam.singleUserSpamSuppressed ? ' Enkeltbruger-spam er ignoreret.' : ''}`
+    : '';
+  $('#stockDisclaimer').textContent = `${stock.disclaimer || 'Fiktiv TSN-aktivitetspris. Ikke en rigtig aktie.'}${spamSuffix}`;
   $('#refreshInfo').textContent = `Tjekker for ændringer hvert ${Math.max(1, Math.round(REFRESH_INTERVAL_MS / 1000))}. sekund og opdaterer ved selv små ændringer`;
   const persistenceInfo = $('#persistenceInfo');
   if (persistenceInfo) {
@@ -582,10 +654,11 @@ function renderStock(stock) {
     persistenceInfo.className = `persistence-info ${persistence.enabled ? 'connected' : 'warning'}`;
   }
 
-  const metrics = stock.metrics || {};
   $('#onlineUsers').textContent = metrics.onlineUsers ?? 0;
   $('#messagesHour').textContent = metrics.messagesPerHour ?? 0;
   $('#postsHour').textContent = metrics.postsPerHour ?? 0;
+  $('#messagesHour').title = antiSpam.enabled ? `Raw messages/hour: ${antiSpam.rawMessagesPerHour ?? metrics.messagesPerHour ?? 0}` : '';
+  $('#postsHour').title = antiSpam.enabled ? `Raw posts/hour: ${antiSpam.rawPostsPerHour ?? metrics.postsPerHour ?? 0}` : '';
   $('#activityScore').textContent = formatNumber(metrics.activityPoints ?? ((metrics.activityScore || 0) * 1000), 0);
   drawChart(stock);
   updateTradeEstimate();
@@ -660,6 +733,7 @@ async function testWalletConnection() {
     if (output) {
       output.textContent = `Wallet OK. Bruger: ${data.user?.username || data.playerId}. Database: ${data.persistence === 'memory' ? 'memory (ikke permanent)' : `${data.walletDatabase}.${data.walletCollection}`}. Saldo: ${formatTsnm(data.wallet?.balance || 0)}.`;
     }
+    renderMarketStatus(data.market);
     renderWallet(data.wallet);
   } catch (error) {
     if (output) output.textContent = `Wallet-test fejlede: ${error.message}`;
@@ -689,31 +763,6 @@ ${data.setupHint || ''}`;
   }
 }
 
-async function resetStock() {
-  const sure = window.confirm('Vil du nulstille TSN Stock? Dette sletter den gemte grafhistorik og starter prisen fra reset-niveauet igen.');
-  if (!sure) return;
-
-  let headers = {};
-  if (config.resetRequiresKey) {
-    const key = window.prompt('Indtast TSN Stock reset key:');
-    if (!key) return;
-    headers['X-Reset-Key'] = key;
-  }
-
-  setStatus('Nulstiller...', '');
-  const response = await fetchWithTimeout('/api/reset', {
-    method: 'POST',
-    headers,
-    cache: 'no-store'
-  }, 12000);
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok || !data.ok) {
-    throw new Error(data.error || `Reset fejlede (${response.status})`);
-  }
-  renderStock(data.stock);
-  setStatus('Nulstillet', 'connected');
-  await fetchStock({ manual: true });
-}
 
 function startAutoRefresh() {
   clearInterval(state.timer);
@@ -730,11 +779,6 @@ $('#refreshButton')?.addEventListener('click', () => fetchStock({ manual: true }
   console.error(error);
 }));
 
-$('#resetButton')?.addEventListener('click', () => resetStock().catch((error) => {
-  setStatus('Kunne ikke nulstille', 'error');
-  console.error(error);
-  alert(error.message || 'Kunne ikke nulstille TSN Stock.');
-}));
 
 $('#buyButton')?.addEventListener('click', () => trade('buy').catch((error) => {
   const status = $('#tradeStatus');
@@ -773,7 +817,10 @@ window.addEventListener('resize', () => {
 });
 
 renderAuth();
+renderMarketStatus(state.market);
 updateRangeButtons();
+fetchMarketHours().catch((error) => console.error(error));
+setInterval(() => fetchMarketHours().catch((error) => console.error(error)), 30_000);
 checkSession().then((ok) => {
   if (ok) {
     fetchWallet().catch((error) => console.error(error));
