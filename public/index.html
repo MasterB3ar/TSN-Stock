@@ -76,6 +76,7 @@
               <h2>Live historik</h2>
             </div>
             <div class="chart-actions">
+              <button id="exportReportButton" class="secondary" type="button">Eksportér rapport</button>
               <button id="refreshButton" class="secondary" type="button">Opdater</button>
             </div>
           </div>
@@ -86,8 +87,10 @@
               <button type="button" data-chart-range="30m" class="range-button">30 min</button>
               <button type="button" data-chart-range="1h" class="range-button">1 time</button>
               <button type="button" data-chart-range="6h" class="range-button">6 timer</button>
+              <button type="button" data-chart-range="today" class="range-button">I dag</button>
               <button type="button" data-chart-range="1d" class="range-button">1 dag</button>
               <button type="button" data-chart-range="7d" class="range-button">7 dage</button>
+              <button type="button" data-chart-range="30d" class="range-button">30 dage</button>
               <button type="button" data-chart-range="all" class="range-button">Alt</button>
             </div>
           </div>
@@ -103,15 +106,41 @@
         <div class="metric card"><strong id="onlineUsers">0</strong><span>Online nu</span></div>
         <div class="metric card"><strong id="messagesHour">0</strong><span>Beskeder/time</span></div>
         <div class="metric card"><strong id="globalChatsHour">0</strong><span>Global chats/time</span></div>
+        <div class="metric card"><strong id="privateMessagesHour">0</strong><span>Private beskeder/time</span></div>
+        <div class="metric card"><strong id="activityScore">0</strong><span>Aktivitetsscore</span></div>
+        <div class="metric card"><strong id="todayChange">0,00</strong><span>Ændring i valgte graf</span></div>
+      </section>
+
+      <section class="insight-layout">
+        <article class="card insight-card">
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">Analyse</p>
+              <h2>Hvorfor ændrede prisen sig?</h2>
+            </div>
+          </div>
+          <p id="priceReasonHeadline" class="reason-headline">Venter på data...</p>
+          <ul id="priceReasonList" class="reason-list"></ul>
+        </article>
+
+        <article class="card insight-card">
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">Alerts</p>
+              <h2>Systemstatus</h2>
+            </div>
+          </div>
+          <div id="alertsList" class="alerts-list"></div>
+        </article>
       </section>
 
       <section class="card formula-card">
         <h2>Hvad TSN-S viser</h2>
-        <p>Dashboardet er read-only og viser kun pris, historik og aktivitetstal.</p>
+        <p>Dashboardet er read-only og viser kun pris, grafer, aktivitetsforklaring, alerts og eksportbar CEO-rapport.</p>
         <div class="formula-grid">
           <div><strong>Pris</strong><span>Fiktiv TSN-S pris</span></div>
-          <div><strong>Grafer</strong><span>Historik fra TSN-S</span></div>
-          <div><strong>Aktivitet</strong><span>Online, beskeder/time og global chats/time</span></div>
+          <div><strong>Grafer</strong><span>10 min, 1 time, i dag, 7 dage, 30 dage og alt</span></div>
+          <div><strong>Aktivitet</strong><span>Online, beskeder/time, global chats/time og aktivitetsscore</span></div>
         </div>
         <p class="small">Spam-beskyttelse er stadig aktiv, så én person ikke kan pumpe prisen med gentagne beskeder.</p>
       </section>

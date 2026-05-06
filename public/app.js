@@ -247,16 +247,25 @@ async function fetchMarketHours() {
   if (response.ok && data.ok) renderMarketStatus(data.market);
 }
 
+function msSinceLocalMidnight() {
+  const now = new Date();
+  const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+  return Math.max(0, now.getTime() - midnight.getTime());
+}
+
 function rangeToMs(range) {
+  const value = String(range || '10m').toLowerCase();
   const ranges = {
     '10m': 10 * 60 * 1000,
     '30m': 30 * 60 * 1000,
     '1h': 60 * 60 * 1000,
     '6h': 6 * 60 * 60 * 1000,
+    today: msSinceLocalMidnight(),
     '1d': 24 * 60 * 60 * 1000,
-    '7d': 7 * 24 * 60 * 60 * 1000
+    '7d': 7 * 24 * 60 * 60 * 1000,
+    '30d': 30 * 24 * 60 * 60 * 1000
   };
-  return range === 'all' ? null : (ranges[range] || ranges['10m']);
+  return value === 'all' ? null : (ranges[value] || ranges['10m']);
 }
 
 function filterHistoryByRange(points, range) {
@@ -305,7 +314,7 @@ function updateRangeButtons() {
   });
   const label = $('#chartRangeLabel');
   if (label) {
-    const names = { '10m': '10 minutter', '30m': '30 minutter', '1h': '1 time', '6h': '6 timer', '1d': '1 dag', '7d': '7 dage', all: 'alt' };
+    const names = { '10m': '10 minutter', '30m': '30 minutter', '1h': '1 time', '6h': '6 timer', today: 'i dag', '1d': '1 dag', '7d': '7 dage', '30d': '30 dage', all: 'alt' };
     label.textContent = `Viser: ${names[state.chartRange] || state.chartRange}`;
   }
 }
@@ -540,6 +549,154 @@ function handleChartPointer(event) {
 }
 
 
+
+function summarizeVisibleRange(stock) {
+  const points = normalizeHistory(stock);
+  if (!points.length) return { points: 0, change: 0, changePercent: 0, firstPrice: 0, lastPrice: 0 };
+  const first = points[0];
+  const last = points[points.length - 1];
+  const firstPrice = Number(first.price) || 0;
+  const lastPrice = Number(last.price) || 0;
+  const change = lastPrice - firstPrice;
+  const changePercent = firstPrice ? (change / firstPrice) * 100 : 0;
+  return {
+    points: points.length,
+    change: Number(change.toFixed(2)),
+    changePercent: Number(changePercent.toFixed(2)),
+    firstPrice,
+    lastPrice
+  };
+}
+
+function buildPriceReasons(stock) {
+  const metrics = stock?.metrics || {};
+  const deltas = metrics.metricDeltas || {};
+  const market = stock?.market || state.market || {};
+  const reasons = [];
+  const trend = stock?.trend || 'flat';
+  const change = Number(stock?.change || 0);
+  const changePercent = Number(stock?.changePercent || 0);
+
+  if (stock?.source === 'last-known') {
+    reasons.push('Normal TSN kunne ikke kontaktes, så dashboardet viser seneste gemte datapunkt.');
+  }
+  if (market.state === 'closed') {
+    reasons.push(`Markedet er lukket. Næste ændring: ${market.nextChangeLabel || market.nextChangeAt || 'ukendt'}.`);
+  } else if (market.state === 'open') {
+    reasons.push(`Markedet er åbent indtil ${market.activeWindow?.end || market.nextChangeAt || 'næste lukning'}.`);
+  }
+
+  const onlineDelta = Number(deltas.onlineDelta || 0);
+  const messageDelta = Number(deltas.messageDelta || 0);
+  const postDelta = Number(deltas.postDelta || 0);
+  const activityDelta = Number(deltas.activityDelta || 0);
+
+  if (Math.abs(onlineDelta) >= 1) reasons.push(`${onlineDelta > 0 ? 'Flere' : 'Færre'} brugere er aktive end ved sidste snapshot (${onlineDelta > 0 ? '+' : ''}${onlineDelta.toFixed(0)}).`);
+  if (Math.abs(messageDelta) >= 0.05) reasons.push(`Beskeder/time ${messageDelta > 0 ? 'steg' : 'faldt'} med ${messageDelta > 0 ? '+' : ''}${messageDelta.toFixed(2)}.`);
+  if (Math.abs(postDelta) >= 0.05) reasons.push(`Global chats/time ${postDelta > 0 ? 'steg' : 'faldt'} med ${postDelta > 0 ? '+' : ''}${postDelta.toFixed(2)}.`);
+  if (Math.abs(activityDelta) >= 0.01) reasons.push(`Aktivitetsscoren ${activityDelta > 0 ? 'steg' : 'faldt'} med ${activityDelta > 0 ? '+' : ''}${activityDelta.toFixed(3)}.`);
+
+  const antiSpam = metrics.antiSpam || {};
+  if (antiSpam.enabled && antiSpam.spamDetected) {
+    reasons.push(`Spamfilteret ignorerede ${Number(antiSpam.spamIgnored || 0).toFixed(0)} spam-lignende events.`);
+  }
+  if (metrics.heldBecauseMetricsUnchanged) {
+    reasons.push('Aktiviteten ændrede sig ikke nok, så prisen blev holdt flad.');
+  }
+  if (!reasons.length) reasons.push('Ingen stor aktivitetsændring er fundet endnu. Prisen er stabil.');
+
+  const headline = trend === 'up'
+    ? `Prisen er oppe ${change >= 0 ? '+' : ''}${change.toFixed(2)} (${changePercent >= 0 ? '+' : ''}${changePercent.toFixed(2)}%).`
+    : trend === 'down'
+      ? `Prisen er nede ${change.toFixed(2)} (${changePercent.toFixed(2)}%).`
+      : 'Prisen er flad, fordi aktiviteten er stabil.';
+
+  return { headline, reasons: reasons.slice(0, 6) };
+}
+
+function renderPriceReasons(stock) {
+  const headline = $('#priceReasonHeadline');
+  const list = $('#priceReasonList');
+  if (!headline || !list) return;
+  const explanation = buildPriceReasons(stock);
+  headline.textContent = explanation.headline;
+  list.innerHTML = explanation.reasons.map((reason) => `<li>${escapeHtml(reason)}</li>`).join('');
+}
+
+function makeClientAlerts(stock) {
+  const alerts = [];
+  const metrics = stock?.metrics || {};
+  const antiSpam = metrics.antiSpam || {};
+  const market = stock?.market || state.market || {};
+  const persistence = stock?.persistence || {};
+  const updatedMs = new Date(stock?.updatedAt || 0).getTime();
+  const ageSeconds = Number.isFinite(updatedMs) ? Math.round((Date.now() - updatedMs) / 1000) : null;
+
+  if (stock?.source === 'last-known') alerts.push({ type: 'danger', title: 'Normal TSN svarer ikke', message: 'Dashboardet viser seneste gemte datapunkt.' });
+  if (ageSeconds !== null && ageSeconds > 180) alerts.push({ type: 'warning', title: 'Gammel data', message: `Seneste datapunkt er cirka ${ageSeconds}s gammelt.` });
+  if (!persistence.enabled) alerts.push({ type: 'warning', title: 'Historik er midlertidig', message: 'MongoDB persistence er ikke aktiv.' });
+  if (market.state === 'closed') alerts.push({ type: 'info', title: 'Marked lukket', message: market.message || 'TSN-S er lukket lige nu.' });
+  if (antiSpam.enabled && antiSpam.spamDetected) alerts.push({ type: antiSpam.singleUserSpamSuppressed ? 'warning' : 'info', title: 'Spamfilter aktivt', message: `${Number(antiSpam.spamIgnored || 0).toFixed(0)} events blev ignoreret.` });
+  if (!alerts.length) alerts.push({ type: 'success', title: 'Alt ser normalt ud', message: 'TSN-kilde, graf og dashboard-data svarer.' });
+  return alerts;
+}
+
+function renderAlerts(stock) {
+  const container = $('#alertsList');
+  if (!container) return;
+  const alerts = makeClientAlerts(stock);
+  container.innerHTML = alerts.map((alert) => `
+    <div class="alert-item ${escapeHtml(alert.type)}">
+      <strong>${escapeHtml(alert.title)}</strong>
+      <span>${escapeHtml(alert.message)}</span>
+    </div>
+  `).join('');
+}
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+async function exportCeoReport() {
+  if (!state.token) return;
+  const button = $('#exportReportButton');
+  const oldText = button?.textContent || 'Eksportér rapport';
+  if (button) {
+    button.disabled = true;
+    button.textContent = 'Eksporterer...';
+  }
+  try {
+    const response = await fetchWithTimeout(`/api/report?range=${encodeURIComponent(state.chartRange)}&force=1`, { headers: authHeaders(), cache: 'no-store' }, 45000);
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.ok) throw new Error(data.error || 'Kunne ikke eksportere rapport.');
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    link.href = url;
+    link.download = `tsn-s-ceo-report-${state.chartRange}-${stamp}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    setStatus('Rapport eksporteret', 'connected');
+  } catch (error) {
+    console.error(error);
+    setStatus('Rapport fejlede', 'error');
+    alert(error.message || 'Kunne ikke eksportere rapport.');
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = oldText;
+    }
+  }
+}
+
 function renderStock(stock) {
   state.stock = stock;
   if (!stock) return;
@@ -570,8 +727,20 @@ function renderStock(stock) {
   $('#onlineUsers').textContent = metrics.onlineUsers ?? 0;
   $('#messagesHour').textContent = metrics.messagesPerHour ?? 0;
   $('#globalChatsHour').textContent = metrics.globalChatsPerHour ?? metrics.postsPerHour ?? 0;
+  const privateMessagesHour = $('#privateMessagesHour');
+  if (privateMessagesHour) privateMessagesHour.textContent = metrics.privateMessagesPerHour ?? 0;
+  const activityScore = $('#activityScore');
+  if (activityScore) activityScore.textContent = metrics.activityScore ?? 0;
+  const visibleRange = summarizeVisibleRange(stock);
+  const todayChange = $('#todayChange');
+  if (todayChange) {
+    todayChange.textContent = `${visibleRange.change >= 0 ? '+' : ''}${formatNumber(visibleRange.change)} (${visibleRange.changePercent >= 0 ? '+' : ''}${formatNumber(visibleRange.changePercent)}%)`;
+    todayChange.className = visibleRange.change > 0 ? 'up-text' : visibleRange.change < 0 ? 'down-text' : 'flat-text';
+  }
   $('#messagesHour').title = antiSpam.enabled ? `Raw messages/hour: ${antiSpam.rawMessagesPerHour ?? metrics.messagesPerHour ?? 0}` : '';
   $('#globalChatsHour').title = antiSpam.enabled ? `Raw global chats/hour: ${antiSpam.rawPostsPerHour ?? metrics.rawGlobalChatsPerHour ?? metrics.postsPerHour ?? 0}` : '';
+  renderPriceReasons(stock);
+  renderAlerts(stock);
   drawChart(stock);
 }
 
@@ -602,7 +771,7 @@ async function fetchChartHistory({ force = false } = {}) {
   state.chartHistory = Array.isArray(data.history) ? data.history : [];
   state.chartHistoryFetchedAt = now;
   updateRangeButtons();
-  if (state.stock) drawChart(state.stock);
+  if (state.stock) renderStock(state.stock);
 }
 
 async function fetchStock({ manual = false } = {}) {
@@ -684,6 +853,8 @@ $('#refreshButton')?.addEventListener('click', () => fetchStock({ manual: true }
   setStatus('Kunne ikke opdatere', 'error');
   console.error(error);
 }));
+
+$('#exportReportButton')?.addEventListener('click', () => exportCeoReport());
 
 
 document.querySelectorAll('[data-chart-range]').forEach((button) => {

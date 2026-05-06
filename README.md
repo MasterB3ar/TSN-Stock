@@ -95,3 +95,19 @@ Manual Deploy → Clear build cache & deploy
 - The dashboard should then load price, graph, online users, messages/hour, and global chats/hour.
 - `/api/stock` and `/api/history` require the CEO login token.
 - `/api/wallet` and `/api/trade` return disabled/removed responses.
+
+
+## v1.2.2 CEO Analytics Upgrades
+
+TSN-S is still CEO-only and read-only. Wallets, TSNM earning, buying stocks, and selling stocks are still removed.
+
+Added in this version:
+
+- Extra CEO stat cards: private messages/hour, activity score, and selected-range price change.
+- More graph ranges: Today and 30D, in addition to 10m, 30m, 1H, 6H, 1D, 7D, and All.
+- Price explanation panel that describes why the TSN-S price moved or stayed flat.
+- System alerts for stale TSN data, MongoDB persistence, closed market state, spam filtering, and source connection problems.
+- Export Report button that downloads a JSON CEO report for the selected graph range.
+- New backend endpoint: `/api/report`.
+
+No new environment variables are required.

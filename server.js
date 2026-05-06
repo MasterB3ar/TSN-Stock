@@ -1227,6 +1227,23 @@ function calculateStandalonePrice(sourceStock, history) {
 }
 
 
+function msSinceLocalMidnight(timezone = MARKET_TIMEZONE, date = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: timezone,
+    hour12: false,
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit'
+  }).formatToParts(date).reduce((acc, part) => {
+    if (part.type !== 'literal') acc[part.type] = part.value;
+    return acc;
+  }, {});
+  const hours = Number(parts.hour) || 0;
+  const minutes = Number(parts.minute) || 0;
+  const seconds = Number(parts.second) || 0;
+  return Math.max(0, ((hours * 60 * 60) + (minutes * 60) + seconds) * 1000 + date.getMilliseconds());
+}
+
 function historyRangeToMs(range) {
   const value = String(range || '10m').toLowerCase();
   const ranges = {
@@ -1234,9 +1251,11 @@ function historyRangeToMs(range) {
     '30m': 30 * 60 * 1000,
     '1h': 60 * 60 * 1000,
     '6h': 6 * 60 * 60 * 1000,
+    'today': msSinceLocalMidnight(MARKET_TIMEZONE),
     '1d': 24 * 60 * 60 * 1000,
     '24h': 24 * 60 * 60 * 1000,
-    '7d': 7 * 24 * 60 * 60 * 1000
+    '7d': 7 * 24 * 60 * 60 * 1000,
+    '30d': 30 * 24 * 60 * 60 * 1000
   };
   if (value === 'all') return null;
   return ranges[value] || ranges['10m'];
@@ -1562,6 +1581,195 @@ async function getStockPayload({ force = false } = {}) {
   }
 }
 
+
+function finiteNumber(value, fallback = 0) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
+function summarizeHistory(history = []) {
+  const clean = cleanHistory(history, { limit: 0 });
+  if (!clean.length) {
+    return {
+      points: 0,
+      firstPrice: 0,
+      lastPrice: 0,
+      high: 0,
+      low: 0,
+      average: 0,
+      change: 0,
+      changePercent: 0,
+      startedAt: null,
+      endedAt: null
+    };
+  }
+  const first = clean[0];
+  const last = clean[clean.length - 1];
+  const prices = clean.map((point) => finiteNumber(point.price)).filter((value) => value > 0);
+  const high = Math.max(...prices);
+  const low = Math.min(...prices);
+  const average = prices.reduce((sum, value) => sum + value, 0) / Math.max(1, prices.length);
+  const change = finiteNumber(last.price) - finiteNumber(first.price);
+  const changePercent = first.price ? (change / first.price) * 100 : 0;
+  return {
+    points: clean.length,
+    firstPrice: Number(finiteNumber(first.price).toFixed(2)),
+    lastPrice: Number(finiteNumber(last.price).toFixed(2)),
+    high: Number(high.toFixed(2)),
+    low: Number(low.toFixed(2)),
+    average: Number(average.toFixed(2)),
+    change: Number(change.toFixed(2)),
+    changePercent: Number(changePercent.toFixed(2)),
+    startedAt: first.createdAt || null,
+    endedAt: last.createdAt || null
+  };
+}
+
+function makePriceExplanation(stock = {}, history = []) {
+  const metrics = stock.metrics || {};
+  const deltas = metrics.metricDeltas || {};
+  const market = stock.market || getMarketStatus();
+  const reasons = [];
+  const source = stock.source || 'live';
+  const trend = stock.trend || 'flat';
+  const change = finiteNumber(stock.change);
+  const changePercent = finiteNumber(stock.changePercent);
+
+  if (source === 'last-known') {
+    reasons.push('Normal TSN could not be reached, so TSN-S is showing the latest saved price point.');
+  }
+  if (market && market.state === 'closed') {
+    reasons.push(`TSN-S market status is closed until ${market.nextChangeAt || 'the next open window'} (${market.timezone || MARKET_TIMEZONE}).`);
+  } else if (market && market.state === 'open') {
+    reasons.push(`TSN-S market status is open until ${market.activeWindow?.end || market.nextChangeAt || 'the next close window'} (${market.timezone || MARKET_TIMEZONE}).`);
+  }
+
+  const onlineDelta = finiteNumber(deltas.onlineDelta);
+  const messageDelta = finiteNumber(deltas.messageDelta);
+  const postDelta = finiteNumber(deltas.postDelta);
+  const activityDelta = finiteNumber(deltas.activityDelta);
+
+  if (Math.abs(onlineDelta) >= 1) {
+    reasons.push(`${onlineDelta > 0 ? 'More' : 'Fewer'} users are active compared with the previous snapshot (${onlineDelta > 0 ? '+' : ''}${Number(onlineDelta.toFixed(2))}).`);
+  }
+  if (Math.abs(messageDelta) >= Math.max(0.05, METRIC_MESSAGE_EPSILON)) {
+    reasons.push(`Messages/hour ${messageDelta > 0 ? 'increased' : 'decreased'} by ${messageDelta > 0 ? '+' : ''}${Number(messageDelta.toFixed(2))}.`);
+  }
+  if (Math.abs(postDelta) >= Math.max(0.05, METRIC_POST_EPSILON)) {
+    reasons.push(`Global chats/hour ${postDelta > 0 ? 'increased' : 'decreased'} by ${postDelta > 0 ? '+' : ''}${Number(postDelta.toFixed(2))}.`);
+  }
+  if (Math.abs(activityDelta) >= Math.max(0.01, METRIC_ACTIVITY_EPSILON)) {
+    reasons.push(`Activity score ${activityDelta > 0 ? 'rose' : 'fell'} by ${activityDelta > 0 ? '+' : ''}${Number(activityDelta.toFixed(3))}.`);
+  }
+
+  const antiSpam = metrics.antiSpam || {};
+  if (antiSpam.enabled && antiSpam.spamDetected) {
+    reasons.push(`Spam filtering ignored ${Number(antiSpam.spamIgnored || 0).toFixed(0)} spam-like activity events before price calculation.`);
+  }
+  if (metrics.heldBecauseMetricsUnchanged) {
+    reasons.push('Activity did not materially change since the last snapshot, so the price was held flat.');
+  }
+  if (!reasons.length) {
+    reasons.push('No major activity change was detected. The price is mostly stable.');
+  }
+
+  const headline = trend === 'up'
+    ? `Price is up ${change >= 0 ? '+' : ''}${Number(change.toFixed(2))} (${changePercent >= 0 ? '+' : ''}${Number(changePercent.toFixed(2))}%).`
+    : trend === 'down'
+      ? `Price is down ${Number(change.toFixed(2))} (${Number(changePercent.toFixed(2))}%).`
+      : 'Price is flat because activity is stable.';
+
+  return {
+    headline,
+    reasons: reasons.slice(0, 6),
+    trend,
+    generatedAt: new Date().toISOString()
+  };
+}
+
+function makeSystemAlerts(stock = {}, history = [], persistence = {}) {
+  const alerts = [];
+  const metrics = stock.metrics || {};
+  const antiSpam = metrics.antiSpam || {};
+  const market = stock.market || getMarketStatus();
+  const updatedMs = new Date(stock.updatedAt || 0).getTime();
+  const ageSeconds = Number.isFinite(updatedMs) ? Math.round((Date.now() - updatedMs) / 1000) : null;
+
+  if (stock.source === 'last-known') {
+    alerts.push({ type: 'danger', title: 'Normal TSN is unreachable', message: 'TSN-S is showing the latest saved datapoint until the normal TSN source responds again.' });
+  }
+  if (ageSeconds !== null && ageSeconds > 180) {
+    alerts.push({ type: 'warning', title: 'Source data is stale', message: `Latest price data is about ${ageSeconds}s old.` });
+  }
+  if (!PERSISTENCE_ENABLED || persistence?.enabled === false) {
+    alerts.push({ type: 'warning', title: 'MongoDB history is not persistent', message: 'Set MONGODB_URI so price history survives Render restarts.' });
+  }
+  if (market?.state === 'closed') {
+    alerts.push({ type: 'info', title: 'Market closed', message: market.message || 'TSN-S is currently closed.' });
+  }
+  if (antiSpam.enabled && antiSpam.spamDetected) {
+    alerts.push({ type: antiSpam.singleUserSpamSuppressed ? 'warning' : 'info', title: 'Spam filtering active', message: `Ignored ${Number(antiSpam.spamIgnored || 0).toFixed(0)} spam-like events in the current activity window.` });
+  }
+  if (history.length < 2) {
+    alerts.push({ type: 'info', title: 'Limited graph history', message: 'TSN-S needs more saved snapshots before long-range graphs become useful.' });
+  }
+  if (!alerts.length) {
+    alerts.push({ type: 'success', title: 'Systems normal', message: 'TSN source, dashboard data, and graph history look healthy.' });
+  }
+  return alerts;
+}
+
+function buildReportPayload(stockPayload, history, range = 'today') {
+  const stock = stockPayload?.stock || {};
+  const summary = summarizeHistory(history);
+  const explanation = makePriceExplanation(stock, history);
+  const alerts = makeSystemAlerts(stock, history, stock.persistence || {});
+  const metrics = stock.metrics || {};
+  return {
+    ok: true,
+    generatedAt: new Date().toISOString(),
+    service: 'TSN-S CEO Dashboard',
+    access: { loginRequired: true, allowedUsername: TSN_STOCK_ALLOWED_USERNAME },
+    range,
+    stock: {
+      symbol: 'TSN',
+      price: finiteNumber(stock.price),
+      change: finiteNumber(stock.change),
+      changePercent: finiteNumber(stock.changePercent),
+      trend: stock.trend || 'flat',
+      updatedAt: stock.updatedAt || null,
+      source: stock.source || 'unknown',
+      market: stock.market || getMarketStatus()
+    },
+    metrics: {
+      onlineUsers: finiteNumber(metrics.onlineUsers),
+      messagesPerHour: finiteNumber(metrics.messagesPerHour),
+      globalChatsPerHour: finiteNumber(metrics.globalChatsPerHour ?? metrics.postsPerHour),
+      privateMessagesPerHour: finiteNumber(metrics.privateMessagesPerHour),
+      activityScore: finiteNumber(metrics.activityScore),
+      activityPoints: finiteNumber(metrics.activityPoints),
+      rawMessagesPerHour: finiteNumber(metrics.rawMessagesPerHour),
+      rawGlobalChatsPerHour: finiteNumber(metrics.rawGlobalChatsPerHour ?? metrics.rawPostsPerHour)
+    },
+    historySummary: summary,
+    explanation,
+    alerts,
+    history: cleanHistory(history, { limit: HISTORY_API_MAX_POINTS }).map((point) => ({
+      price: point.price,
+      change: point.change,
+      changePercent: point.changePercent,
+      trend: point.trend,
+      metrics: point.metrics,
+      createdAt: point.createdAt
+    })),
+    notes: [
+      'TSN-S is read-only.',
+      'Wallet and trading are disabled.',
+      'Only the configured CEO username can access this report.'
+    ]
+  };
+}
+
 const server = http.createServer((req, res) => {
   const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
   const urlPath = url.pathname;
@@ -1711,6 +1919,28 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+
+  if (urlPath === '/api/report') {
+    if (req.method !== 'GET') return sendJson(res, 405, { ok: false, error: 'Use GET for report export.' });
+    const range = url.searchParams.get('range') || 'today';
+    const sinceMs = historyRangeToMs(range);
+    const estimatedRangePoints = sinceMs
+      ? Math.ceil(sinceMs / Math.max(1000, REFRESH_INTERVAL_MS)) + 120
+      : MAX_HISTORY_POINTS;
+    const queryLimit = sinceMs
+      ? Math.min(Math.max(estimatedRangePoints, HISTORY_API_MAX_POINTS), MAX_HISTORY_POINTS)
+      : MAX_HISTORY_POINTS;
+    getTsnSession(req)
+      .then(() => getStockPayload({ force: url.searchParams.get('force') === '1' }))
+      .then((payload) => Promise.all([
+        Promise.resolve(payload),
+        loadHistory({ sinceMs: sinceMs || 0, limit: queryLimit }).catch(() => cleanHistory(memoryHistory))
+      ]))
+      .then(([payload, history]) => sendJson(res, 200, buildReportPayload(payload, history, range)))
+      .catch((error) => sendJson(res, error.statusCode || 500, { ok: false, error: error.message, accessDenied: Boolean(error.accessDenied) }));
+    return;
+  }
+
   if (urlPath === '/api/reset') {
     if (!RESET_ENABLED) {
       return sendJson(res, 410, { ok: false, error: 'Reset is disabled in this TSN-S version.' });
@@ -1742,9 +1972,11 @@ const server = http.createServer((req, res) => {
         allowedUsername: TSN_STOCK_ALLOWED_USERNAME,
         walletEnabled: false,
         tradingEnabled: false,
+        reportEnabled: true,
         historyApiMaxPoints: HISTORY_API_MAX_POINTS,
         storedHistoryPoints: MAX_HISTORY_POINTS,
         stockPayloadHistoryPoints: STOCK_PAYLOAD_HISTORY_POINTS,
+        chartRanges: ['10m', '30m', '1h', '6h', 'today', '1d', '7d', '30d', 'all'],
         marketHours: getMarketStatus(),
         antiSpam: { enabled: ANTI_SPAM_ENABLED, messageCapPerUserPerHour: ANTI_SPAM_MESSAGE_CAP_PER_USER_PER_HOUR, postCapPerUserPerHour: ANTI_SPAM_POST_CAP_PER_USER_PER_HOUR }
       })};`,

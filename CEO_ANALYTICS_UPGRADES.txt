@@ -1,0 +1,23 @@
+TSN-S v1.2.2 CEO Analytics Upgrades
+
+This update keeps TSN-S CEO-only and read-only.
+
+Added:
+- More CEO dashboard stat cards.
+- Today and 30D chart ranges.
+- Price-change explanation panel.
+- System alerts panel.
+- Export Report button.
+- /api/report endpoint.
+
+Still removed/disabled:
+- Wallet
+- TSNM earning
+- Buying stock
+- Selling stock
+- Public access
+
+Required login:
+- Only the configured username can access TSN-S.
+- Default allowed username: ceo
+- Env var: TSN_STOCK_ALLOWED_USERNAME=ceo
