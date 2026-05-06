@@ -1,0 +1,39 @@
+# TSN-S v1.1.6 Wallet Load Fix
+
+This update fixes the issue where the TSNM wallet could fail to load even after login.
+
+## What changed
+
+- `/api/wallet` no longer waits for a live normal-TSN stock/activity fetch before returning the wallet.
+- `/api/wallet/tick` no longer waits for normal TSN before rewarding TSNM.
+- Wallet requests now use the latest known stock price, or the target/base price if no stock payload has loaded yet.
+- Frontend wallet request timeout increased from 10 seconds to 30 seconds.
+- Added a **Test wallet** button in the wallet card.
+- Added authenticated debug endpoint: `/api/wallet/test`.
+- `/healthz` now shows wallet persistence database/collection info.
+
+## Important Render env vars
+
+Use these on TSN-S:
+
+```txt
+MONGODB_URI=your-tsn-stock-mongodb-uri
+MONGODB_DATABASE=tsn_stock
+MONGODB_WALLET_COLLECTION=tsnMoneyWallets
+MONGODB_TRADE_COLLECTION=tsnMoneyTrades
+
+TSN_API_BASE_URL=https://your-normal-tsn.onrender.com
+TSN_API_CONNECT_TIMEOUT_MS=30000
+TSN_API_RETRY_COUNT=2
+```
+
+Do not put `/api` at the end of `TSN_API_BASE_URL`.
+
+## After deploying
+
+1. Open TSN-S.
+2. Log in with your normal TSN account.
+3. Press **Test wallet**.
+4. Or open `/api/wallet/test` while logged in.
+
+If it says `memory`, then `MONGODB_URI` is missing or not working. The wallet will reset after restart if it is only memory.

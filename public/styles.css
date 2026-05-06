@@ -449,3 +449,9 @@ code { background: rgba(255,255,255,.08); border: 1px solid var(--border); borde
   color: var(--muted);
   background: rgba(0, 0, 0, 0.22);
 }
+
+.small-button {
+  margin-top: 0.65rem;
+  padding: 0.55rem 0.8rem;
+  font-size: 0.85rem;
+}

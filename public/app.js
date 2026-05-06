@@ -488,9 +488,15 @@ function updateTradeEstimate() {
 
 async function fetchWallet() {
   if (!state.token) return;
-  const response = await fetchWithTimeout('/api/wallet', { headers: authHeaders(), cache: 'no-store' }, 10000);
+  const rewardInfo = $('#rewardInfo');
+  if (rewardInfo) rewardInfo.textContent = 'Henter TSNM wallet...';
+  const response = await fetchWithTimeout('/api/wallet', { headers: authHeaders(), cache: 'no-store' }, 30000);
   const data = await response.json().catch(() => ({}));
-  if (!response.ok || !data.ok) throw new Error(data.error || 'Kunne ikke hente TSNM wallet');
+  if (!response.ok || !data.ok) {
+    const message = data.error || 'Kunne ikke hente TSNM wallet';
+    if (rewardInfo) rewardInfo.textContent = message;
+    throw new Error(message);
+  }
   renderWallet(data.wallet);
   updateTradeEstimate();
 }
@@ -502,7 +508,7 @@ async function tickWallet() {
     headers: authHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({}),
     cache: 'no-store'
-  }, 10000);
+  }, 30000);
   const data = await response.json().catch(() => ({}));
   if (!response.ok || !data.ok) throw new Error(data.error || 'Kunne ikke opdatere TSNM wallet');
   renderWallet(data.wallet);
@@ -630,6 +636,22 @@ async function fetchStock({ manual = false } = {}) {
 
 
 
+async function testWalletConnection() {
+  const output = $('#walletTestOutput') || $('#sourceTestOutput');
+  if (output) output.textContent = 'Tester TSNM wallet...';
+  try {
+    const response = await fetchWithTimeout('/api/wallet/test', { headers: authHeaders(), cache: 'no-store' }, 30000);
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.ok) throw new Error(data.error || data.message || 'Wallet-test fejlede.');
+    if (output) {
+      output.textContent = `Wallet OK. Bruger: ${data.user?.username || data.playerId}. Database: ${data.persistence === 'memory' ? 'memory (ikke permanent)' : `${data.walletDatabase}.${data.walletCollection}`}. Saldo: ${formatTsnm(data.wallet?.balance || 0)}.`;
+    }
+    renderWallet(data.wallet);
+  } catch (error) {
+    if (output) output.textContent = `Wallet-test fejlede: ${error.message}`;
+  }
+}
+
 async function testTsnSourceConnection() {
   const output = $('#sourceTestOutput');
   if (output) output.textContent = 'Tester forbindelse til normal TSN...';
@@ -723,6 +745,7 @@ document.querySelectorAll('[data-chart-range]').forEach((button) => {
 $('#tradeQuantity')?.addEventListener('input', updateTradeEstimate);
 $('#loginForm')?.addEventListener('submit', (event) => loginWithTsn(event).catch((error) => setAuthStatus(error.message || 'Login fejlede.')));
 $('#logoutButton')?.addEventListener('click', logout);
+$('#walletTestButton')?.addEventListener('click', () => testWalletConnection());
 
 $('#stockChart')?.addEventListener('mousemove', handleChartPointer);
 $('#stockChart')?.addEventListener('touchmove', (event) => {

@@ -433,3 +433,25 @@ NPM_CONFIG_PROGRESS=false
 Then deploy with **Manual Deploy → Clear build cache & deploy**.
 
 Do not use `npm ci` for this package on Render. `npm ci` requires a lockfile and can reuse broken/internal package URLs.
+
+## v1.1.6 wallet loading fix
+
+This version makes the TSNM wallet load independently from the normal TSN activity/stock source. Earlier versions could show a wallet loading failure if normal TSN was asleep, slow on Render, or if the stock-source request took longer than the frontend wallet timeout.
+
+New tools:
+
+- `GET /api/wallet` returns the wallet without blocking on a live TSN stock fetch.
+- `POST /api/wallet/tick` rewards online TSNM without blocking on normal TSN.
+- `GET /api/wallet/test` checks the logged-in user's wallet, database, collection, and write access.
+- The wallet card has a **Test wallet** button.
+
+For permanent wallets, TSN-S must have:
+
+```txt
+MONGODB_URI=your-tsn-stock-mongodb-uri
+MONGODB_DATABASE=tsn_stock
+MONGODB_WALLET_COLLECTION=tsnMoneyWallets
+MONGODB_TRADE_COLLECTION=tsnMoneyTrades
+```
+
+If `/api/wallet/test` says `memory`, the wallet is not permanent yet.

@@ -625,9 +625,23 @@ async function recordTrade(trade) {
   await collection.insertOne(trade);
 }
 
-async function getCurrentStockPrice() {
-  const payload = await getStockPayload({ force: true });
-  return Number(payload?.stock?.price) || TARGET_BASE_PRICE || 100;
+function bestKnownStockPrice() {
+  return Number(cachedPayload?.stock?.price) || Number(memoryHistory.at(-1)?.price) || TARGET_BASE_PRICE || 100;
+}
+
+async function getCurrentStockPrice({ force = true } = {}) {
+  if (!force && cachedPayload?.stock?.price) return Number(cachedPayload.stock.price) || TARGET_BASE_PRICE || 100;
+  try {
+    const payload = await getStockPayload({ force });
+    return Number(payload?.stock?.price) || bestKnownStockPrice();
+  } catch {
+    return bestKnownStockPrice();
+  }
+}
+
+async function getPublicWalletFast(playerId, playerName, reward = null) {
+  const wallet = await getWallet(playerId, playerName);
+  return publicWallet(wallet, bestKnownStockPrice(), reward);
 }
 
 async function tradeStock({ playerId, playerName, type, quantity }) {
@@ -638,7 +652,7 @@ async function tradeStock({ playerId, playerName, type, quantity }) {
   if (qty > 1_000_000) throw new Error('Quantity is too large');
 
   const { wallet } = await rewardOnlineMinutes(playerId, playerName);
-  const price = await getCurrentStockPrice();
+  const price = await getCurrentStockPrice({ force: true });
   const value = Number((qty * price).toFixed(2));
   const now = new Date().toISOString();
 
@@ -1383,7 +1397,7 @@ const server = http.createServer((req, res) => {
       targetBasePrice: TARGET_BASE_PRICE,
       autoRebaseEnabled: AUTO_REBASE_ENABLED,
       persistence: PERSISTENCE_ENABLED ? 'mongodb-uri' : 'memory',
-      tsnMoney: { earnPerMinute: TSNM_EARN_PER_MINUTE, walletCollection: WALLET_COLLECTION, tradeCollection: TRADE_COLLECTION },
+      tsnMoney: { earnPerMinute: TSNM_EARN_PER_MINUTE, walletCollection: WALLET_COLLECTION, tradeCollection: TRADE_COLLECTION, walletDatabase: PERSISTENCE_ENABLED ? DATABASE : null, walletPersistence: PERSISTENCE_ENABLED ? 'mongodb-uri' : 'memory' },
       tsnApiConfigured: Boolean(TSN_API_BASE_URL),
       tsnApiEnvName: TSN_API_ENV.name || null,
       tsnApiBaseUrl: TSN_API_BASE_URL || null,
@@ -1467,12 +1481,16 @@ const server = http.createServer((req, res) => {
   if (urlPath === '/api/wallet') {
     if (req.method !== 'GET') return sendJson(res, 405, { ok: false, error: 'Use GET for wallet.' });
     walletForRequest(req)
-      .then((identity) => Promise.all([identity, getWallet(identity.playerId, identity.playerName), getStockPayload({ force: false }).catch(() => null)]))
-      .then(([identity, wallet, payload]) => sendJson(res, 200, {
+      .then((identity) => getPublicWalletFast(identity.playerId, identity.playerName)
+        .then((wallet) => ({ identity, wallet })))
+      .then(({ identity, wallet }) => sendJson(res, 200, {
         ok: true,
         user: identity.user,
-        wallet: publicWallet(wallet, payload?.stock?.price || TARGET_BASE_PRICE),
+        wallet,
         earnPerMinute: TSNM_EARN_PER_MINUTE,
+        persistence: PERSISTENCE_ENABLED ? 'mongodb-uri' : 'memory',
+        walletDatabase: PERSISTENCE_ENABLED ? DATABASE : null,
+        walletCollection: WALLET_COLLECTION,
         fictional: true
       }))
       .catch((error) => sendJson(res, error.statusCode || 400, { ok: false, error: error.data?.error || error.message }));
@@ -1482,17 +1500,57 @@ const server = http.createServer((req, res) => {
   if (urlPath === '/api/wallet/tick') {
     if (req.method !== 'POST') return sendJson(res, 405, { ok: false, error: 'Use POST for wallet tick.' });
     walletForRequest(req)
-      .then((identity) => Promise.all([
-        identity,
-        rewardOnlineMinutes(identity.playerId, identity.playerName),
-        getStockPayload({ force: false }).catch(() => null)
-      ]))
-      .then(([identity, result, payload]) => sendJson(res, 200, {
+      .then((identity) => rewardOnlineMinutes(identity.playerId, identity.playerName)
+        .then((result) => ({ identity, result })))
+      .then(({ identity, result }) => sendJson(res, 200, {
         ok: true,
         user: identity.user,
-        wallet: publicWallet(result.wallet, payload?.stock?.price || TARGET_BASE_PRICE, result.reward),
+        wallet: publicWallet(result.wallet, bestKnownStockPrice(), result.reward),
         earnPerMinute: TSNM_EARN_PER_MINUTE,
+        persistence: PERSISTENCE_ENABLED ? 'mongodb-uri' : 'memory',
+        walletDatabase: PERSISTENCE_ENABLED ? DATABASE : null,
+        walletCollection: WALLET_COLLECTION,
         fictional: true
+      }))
+      .catch((error) => sendJson(res, error.statusCode || 400, { ok: false, error: error.data?.error || error.message }));
+    return;
+  }
+
+  if (urlPath === '/api/wallet/test') {
+    if (req.method !== 'GET') return sendJson(res, 405, { ok: false, error: 'Use GET for wallet test.' });
+    walletForRequest(req)
+      .then(async (identity) => {
+        const wallet = await getWallet(identity.playerId, identity.playerName);
+        let databaseWriteOk = !PERSISTENCE_ENABLED;
+        let databaseError = null;
+        if (PERSISTENCE_ENABLED) {
+          try {
+            const collection = await getWalletCollection();
+            await collection.updateOne(
+              { playerId: wallet.playerId },
+              { $set: { walletTestedAt: new Date().toISOString() } },
+              { upsert: true }
+            );
+            databaseWriteOk = true;
+          } catch (error) {
+            databaseError = error.message;
+          }
+        }
+        return { identity, wallet, databaseWriteOk, databaseError };
+      })
+      .then(({ identity, wallet, databaseWriteOk, databaseError }) => sendJson(res, 200, {
+        ok: databaseWriteOk,
+        user: identity.user,
+        playerId: identity.playerId,
+        persistence: PERSISTENCE_ENABLED ? 'mongodb-uri' : 'memory',
+        walletDatabase: PERSISTENCE_ENABLED ? DATABASE : null,
+        walletCollection: WALLET_COLLECTION,
+        databaseWriteOk,
+        databaseError,
+        wallet: publicWallet(wallet, bestKnownStockPrice()),
+        message: databaseWriteOk
+          ? 'Wallet can load and save.'
+          : 'Wallet loaded, but MongoDB write failed. Check MONGODB_URI and database permissions.'
       }))
       .catch((error) => sendJson(res, error.statusCode || 400, { ok: false, error: error.data?.error || error.message }));
     return;
