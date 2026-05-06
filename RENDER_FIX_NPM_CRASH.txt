@@ -1,0 +1,35 @@
+TSN-S Render npm crash fix
+===========================
+
+Your previous Render build failed with:
+  npm error Exit handler never called!
+
+That is an npm/Node build-tool crash, not a TSN-S code error.
+This package pins Node 20.12.2 + npm 10.5.0, removes the package-lock file that could point to the wrong registry, and adds .npmrc settings that disable audit/fund/progress.
+
+Render settings:
+
+Build Command:
+  npm cache clean --force && npm install --omit=dev --no-audit --no-fund --prefer-online
+
+Start Command:
+  node server.js
+
+Environment variables:
+  NODE_VERSION=20.12.2
+  NODE_ENV=production
+  NPM_CONFIG_AUDIT=false
+  NPM_CONFIG_FUND=false
+  NPM_CONFIG_PROGRESS=false
+  TSN_API_BASE_URL=https://YOUR-NORMAL-TSN.onrender.com
+  MONGODB_URI=mongodb+srv://USERNAME:PASSWORD@cluster0.xxxxx.mongodb.net/tsn_stock?retryWrites=true&w=majority
+  TSN_ORIGINAL_MONGODB_URI=mongodb+srv://USERNAME:PASSWORD@cluster0.xxxxx.mongodb.net/tsn?retryWrites=true&w=majority
+  TSN_ORIGINAL_MONGODB_DATABASE=tsn
+  TSN_ORIGINAL_MONGODB_STATE_COLLECTION=app_state
+  TSN_ORIGINAL_MONGODB_STATE_ID=main
+  TSN_STOCK_SESSION_SECRET=make-this-long-and-random
+
+Important:
+- Do not paste env vars into package.json.
+- If package.json is in the root of the GitHub repo, leave Render Root Directory empty.
+- Deploy with: Manual Deploy -> Clear build cache & deploy.

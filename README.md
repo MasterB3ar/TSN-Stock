@@ -357,3 +357,23 @@ https://YOUR-TSN-STOCK.onrender.com/api/source-test
 ```
 
 It shows whether TSN-S can reach the original TSN API and/or the MongoDB fallback.
+
+## Render npm crash fix
+
+If Render fails with `npm error Exit handler never called!`, use these settings:
+
+```txt
+Build Command:
+npm cache clean --force && npm install --omit=dev --no-audit --no-fund --prefer-online
+
+Start Command:
+node server.js
+```
+
+Set this environment variable on Render:
+
+```env
+NODE_VERSION=20.12.2
+```
+
+Then use **Manual Deploy → Clear build cache & deploy**.

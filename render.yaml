@@ -3,44 +3,20 @@ services:
     name: tsn-stock
     env: node
     plan: free
-    buildCommand: npm install --omit=dev --no-audit --no-fund
-    startCommand: npm start
+    buildCommand: npm cache clean --force && npm install --omit=dev --no-audit --no-fund --prefer-online
+    startCommand: node server.js
     envVars:
+      - key: NODE_VERSION
+        value: 20.12.2
       - key: NODE_ENV
         value: production
-      - key: NODE_VERSION
-        value: 22.16.0
       - key: NPM_CONFIG_AUDIT
         value: "false"
       - key: NPM_CONFIG_FUND
         value: "false"
-      - key: TSN_API_BASE_URL
-        sync: false
-      - key: MONGODB_URI
-        sync: false
-      - key: MONGODB_DATABASE
-        value: tsn_stock
-      - key: MONGODB_COLLECTION
-        value: stockSnapshots
+      - key: NPM_CONFIG_PROGRESS
+        value: "false"
       - key: TSN_STOCK_REFRESH_MS
         value: "2000"
       - key: TSN_STOCK_MAX_HISTORY
         value: "302400"
-      - key: TSN_STOCK_RESET_KEY
-        sync: false
-      - key: TSN_STOCK_RESET_PRICE
-        value: "100"
-      - key: TSN_STOCK_TARGET_BASE_PRICE
-        value: "100"
-      - key: TSN_STOCK_AUTO_REBASE
-        value: "true"
-      - key: TSN_STOCK_AUTO_REBASE_THRESHOLD
-        value: "1.8"
-      - key: TSNM_EARN_PER_MINUTE
-        value: "10"
-      - key: TSNM_MAX_REWARD_MINUTES_PER_TICK
-        value: "30"
-      - key: MONGODB_WALLET_COLLECTION
-        value: tsnMoneyWallets
-      - key: MONGODB_TRADE_COLLECTION
-        value: tsnMoneyTrades
