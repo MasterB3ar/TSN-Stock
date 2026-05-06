@@ -1,49 +1,38 @@
-IMPORTANT FIX FOR EJSONPARSE
+TSN-S v1.2.0 CEO-only read-only setup
 
-If Render says package.json starts with something like:
-PORT=3010
-TSN_API_BASE_URL=...
+Render settings:
+Build Command: bash ./render-build.sh
+Start Command: node server.js
+Root Directory: leave empty if these files are in the repo root.
 
-then your package.json file in GitHub was accidentally replaced with environment variables.
-package.json must stay JSON. Environment variables must be added in Render > Environment, not inside package.json.
-
-Correct Render settings:
-Build Command: npm install --omit=dev --no-audit --no-fund
-Start Command: npm start
-
-Add these in Render > Environment:
-TSN_API_BASE_URL=https://YOUR-NORMAL-TSN.onrender.com
-MONGODB_URI=mongodb+srv://USERNAME:PASSWORD@cluster0.xxxxx.mongodb.net/tsn_stock?retryWrites=true&w=majority
-TSN_ORIGINAL_MONGODB_URI=mongodb+srv://USERNAME:PASSWORD@cluster0.xxxxx.mongodb.net/tsn?retryWrites=true&w=majority
-TSN_ORIGINAL_MONGODB_DATABASE=tsn
-TSN_ORIGINAL_MONGODB_STATE_COLLECTION=app_state
-TSN_ORIGINAL_MONGODB_STATE_ID=main
-TSN_STOCK_SESSION_SECRET=make-this-a-long-random-secret
+Required Render Environment Variables:
 NODE_ENV=production
 NODE_VERSION=20.12.2
-NPM_CONFIG_AUDIT=false
-NPM_CONFIG_FUND=false
-
-Optional:
-PORT=3010
-TSN_STOCK_MAX_HISTORY=302400
-TSN_STOCK_REFRESH_MS=2000
-
-
-TSN connection check:
-- TSN_API_BASE_URL must be your NORMAL TSN root URL, not TSN-S.
-- Example: https://your-normal-tsn.onrender.com
-- Do not add /api at the end.
-- Optional: TSN_API_CONNECT_TIMEOUT_MS=30000 and TSN_API_RETRY_COUNT=2.
-- Open /api/source-test on TSN-S after deploy.
-
-TSN_STOCK_MARKET_TIMEZONE=Europe/Copenhagen
-
-
-Anti-spam / reset settings:
+TSN_API_BASE_URL=https://YOUR-NORMAL-TSN.onrender.com
+TSN_API_CONNECT_TIMEOUT_MS=30000
+TSN_API_RETRY_COUNT=2
+TSN_STOCK_ALLOWED_USERNAME=ceo
+TSN_STOCK_SESSION_SECRET=make-this-a-long-random-secret
+MONGODB_URI=mongodb+srv://USERNAME:PASSWORD@cluster0.xxxxx.mongodb.net/tsn_stock?retryWrites=true&w=majority
+MONGODB_DATABASE=tsn_stock
+MONGODB_COLLECTION=stockSnapshots
 TSN_STOCK_ENABLE_RESET=false
 TSN_STOCK_ANTI_SPAM=true
 TSN_STOCK_SPAM_MESSAGE_CAP_PER_USER_PER_HOUR=8
 TSN_STOCK_SPAM_POST_CAP_PER_USER_PER_HOUR=3
 TSN_STOCK_SPAM_DUPLICATE_WINDOW_MS=120000
 TSN_STOCK_SPAM_MIN_UNIQUE_USERS_FOR_FULL_BOOST=2
+
+Optional direct normal-TSN database login fallback:
+TSN_ORIGINAL_MONGODB_URI=mongodb+srv://USERNAME:PASSWORD@cluster0.xxxxx.mongodb.net/tsn?retryWrites=true&w=majority
+TSN_ORIGINAL_MONGODB_DATABASE=tsn
+TSN_ORIGINAL_MONGODB_STATE_COLLECTION=app_state
+TSN_ORIGINAL_MONGODB_STATE_ID=main
+TSN_DATA_ENCRYPTION_KEY=your-original-tsn-data-encryption-key
+
+Important:
+- TSN_API_BASE_URL must be the NORMAL TSN root URL, not TSN-S.
+- Correct: https://your-normal-tsn.onrender.com
+- Wrong: https://your-tsn-s.onrender.com
+- Wrong: https://your-normal-tsn.onrender.com/api
+- Wallet and trading environment variables are no longer used.

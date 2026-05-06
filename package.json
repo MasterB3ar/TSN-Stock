@@ -1,7 +1,7 @@
 {
   "name": "tsn-stock-standalone",
-  "version": "1.1.9",
-  "description": "Standalone TSN-S / TSN Stock with TSN login, TSNM trading, MongoDB persistence, market hours, anti-spam stock pricing, and no public reset button.",
+  "version": "1.2.0",
+  "description": "Restricted read-only TSN-S CEO dashboard with TSN login, price graphs, activity metrics, and no wallet or stock trading.",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",

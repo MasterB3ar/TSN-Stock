@@ -1,0 +1,12 @@
+TSN-S v1.2.0 CEO-only dashboard update
+
+Implemented:
+- Login required before TSN-S data loads.
+- Only username ceo is allowed.
+- Non-ceo users see: access denied.
+- Wallet removed.
+- TSNM earning removed.
+- Stock buy/sell removed.
+- Trade and wallet API routes disabled.
+- Dashboard now only shows price, graphs, online users, messages/hour, and global chats/hour.
+- API data routes require a valid CEO TSN-S token.

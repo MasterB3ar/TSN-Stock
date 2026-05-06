@@ -1,106 +1,60 @@
-# TSN Stock Standalone — TSNM + MongoDB persistent stock trading
+# TSN-S — CEO-only read-only dashboard
 
-This is the standalone TSN Stock website. It reads activity metrics from your original TSN website, calculates the TSN Stock price inside the standalone TSN Stock service, saves price snapshots in MongoDB, and adds **TSNM (TSN Money)**: a fictional points system where users log in with their original TSN account, earn 10 TSNM per online minute, and can buy/sell fictional TSN Stock.
+TSN-S is now a restricted dashboard for the normal TSN site. It is **not** a wallet/trading app anymore.
 
-This version uses the normal MongoDB Atlas connection string:
+## What changed in v1.2.0
+
+- You must log in before the dashboard loads.
+- Only the normal TSN user with username `ceo` can log in.
+- Any other username gets the message: `access denied`.
+- TSNM wallet is removed.
+- TSNM earning is removed.
+- Buying/selling TSN Stock is removed.
+- `/api/wallet`, `/api/wallet/tick`, `/api/wallet/test`, `/api/trade`, and `/api/trade/test` are disabled.
+- The dashboard only shows:
+  - TSN-S price
+  - price graph/history
+  - online users
+  - messages per hour
+  - global chats per hour
+- Anti-spam protection stays enabled so one person cannot pump the TSN-S price.
+
+## Required normal TSN endpoints
+
+TSN-S logs in through your normal TSN website and reads stock/activity data from it:
 
 ```txt
-MONGODB_URI=mongodb+srv://...
+/api/auth/login
+/api/me
+/api/public/stock
 ```
 
-## TSN connection fix in v1.1.5
+Set this on the **TSN-S Render service**:
 
-This version is more tolerant when connecting to the normal TSN service:
+```env
+TSN_API_BASE_URL=https://your-normal-tsn.onrender.com
+```
 
-- `TSN_API_BASE_URL` is normalized automatically if you accidentally add a trailing slash or `/api`.
-- Extra aliases are accepted: `TSN_BASE_URL`, `ORIGINAL_TSN_URL`, `TSN_URL`, and `PUBLIC_TSN_URL`.
-- API calls now use a longer timeout and retry, which helps when the normal TSN Render service is asleep and needs to wake up.
-- TSN-S no longer accidentally treats its own `MONGODB_URI`/`tsn_stock` database as the normal TSN database. Direct MongoDB fallback only activates when `TSN_ORIGINAL_MONGODB_URI` is explicitly set.
-- Visit `/api/source-test` on TSN-S to see exactly whether the API or MongoDB fallback is connecting.
+Do **not** use the TSN-S URL, and do **not** add `/api` at the end.
 
-Correct setup:
+## Required Render environment variables
 
-```txt
+```env
+NODE_ENV=production
+NODE_VERSION=20.12.2
+
 TSN_API_BASE_URL=https://your-normal-tsn.onrender.com
 TSN_API_CONNECT_TIMEOUT_MS=30000
 TSN_API_RETRY_COUNT=2
-```
 
-Wrong setup examples:
+TSN_STOCK_ALLOWED_USERNAME=ceo
+TSN_STOCK_SESSION_SECRET=make-this-a-long-random-secret
 
-```txt
-TSN_API_BASE_URL=https://your-tsn-s.onrender.com
-TSN_API_BASE_URL=https://your-normal-tsn.onrender.com/api
-```
+MONGODB_URI=mongodb+srv://USERNAME:PASSWORD@cluster0.xxxxx.mongodb.net/tsn_stock?retryWrites=true&w=majority
+MONGODB_DATABASE=tsn_stock
+MONGODB_COLLECTION=stockSnapshots
 
-
-## What is included
-
-- Saves TSN Stock price snapshots whenever metrics change, checked about every 2 seconds.
-- Calculates the next price from the last MongoDB snapshot, so the number moves when TSN activity changes.
-- Uses a 100-base activity model with anti-spam filtering: active users, real messages, and real posts can push the price up, but one person spamming cannot pump the stock.
-- Loads old price history after restart/redeploy.
-- Keeps the Nordnet-style hover chart.
-- Uses the official `mongodb` Node package.
-- Falls back to temporary in-memory history if `MONGODB_URI` is not configured.
-- Keeps `/healthz` for uptime checks.
-- Removes the public **Reset** button; reset is disabled by default so users cannot wipe chart history.
-- Adds **original TSN account login/logout** inside TSN-S.
-- TSN-S verifies sessions through the original TSN `/api/auth/login` and `/api/me` endpoints. API calls use retry/longer timeout so sleeping Render services have time to wake up.
-- Adds **TSNM wallets** persisted in MongoDB and tied to the original TSN user id.
-- Users earn **10 TSNM per online minute** while logged in and the TSN Stock page is open.
-- Users can buy and sell fictional TSN Stock with TSNM.
-- Tracks balance, shares, average buy price, portfolio value, net worth, realized/unrealized profit, and trade history.
-
-## Original TSN requirement
-
-Your original TSN website must have these endpoints:
-
-```txt
-/api/public/stock
-/api/auth/login
-/api/me
-```
-
-Example:
-
-```txt
-https://your-normal-tsn.onrender.com/api/public/stock
-```
-
-
-### Activity score
-
-This version removes the old activity-score cap. The visible activity score is now shown as activity points, so it can go beyond **3500** when TSN has high usage. The stock price still uses a softened score internally, so a huge activity score does not instantly destroy the around-100 price balance.
-
-Optional settings:
-
-```env
-TSN_STOCK_ACTIVITY_POINTS_MULTIPLIER=1000
-TSN_STOCK_ACTIVITY_PRICE_SOFT_CAP=8
-TSN_STOCK_MESSAGE_EPSILON=0.05
-TSN_STOCK_POST_EPSILON=0.05
-TSN_STOCK_ACTIVITY_EPSILON=0.01
-TSN_STOCK_MAX_PRICE_MOVE_PER_TICK=1.25
-TSN_STOCK_DOWNTURN_STRENGTH=1
-TSN_STOCK_QUIET_DECAY_PER_TICK=0.08
-```
-
-
-## Anti-spam stock protection in v1.1.9
-
-TSN-S now filters activity before it affects the price. This means one user cannot spam comments/messages/posts to pump the stock.
-
-Protection rules:
-
-- Repeated identical messages from the same user inside 2 minutes are ignored.
-- A user can only contribute up to 8 counted messages/hour and 3 counted posts/hour by default.
-- If spam is detected and it is coming from only one contributor, TSN-S suppresses that message/post boost completely, so the stock does not go up from that spam.
-- The UI shows effective activity counts instead of raw spam counts.
-
-Optional environment variables:
-
-```env
+TSN_STOCK_ENABLE_RESET=false
 TSN_STOCK_ANTI_SPAM=true
 TSN_STOCK_SPAM_MESSAGE_CAP_PER_USER_PER_HOUR=8
 TSN_STOCK_SPAM_POST_CAP_PER_USER_PER_HOUR=3
@@ -108,406 +62,36 @@ TSN_STOCK_SPAM_DUPLICATE_WINDOW_MS=120000
 TSN_STOCK_SPAM_MIN_UNIQUE_USERS_FOR_FULL_BOOST=2
 ```
 
+## Optional direct MongoDB login fallback
 
-## TSN-S login
-
-TSN-S does not create separate stock accounts anymore. Users log in with their original TSN account.
-
-Flow:
-
-1. User enters normal TSN username/password on TSN-S.
-2. TSN-S sends that login to the original TSN server.
-3. Original TSN returns the normal TSN token and user id.
-4. TSN-S stores the token in the browser and verifies it with `/api/me`.
-5. TSNM wallet/trades are stored under the original TSN user id.
-
-Logout only removes the TSN-S browser session. It does not delete the original TSN account.
-
-## Render setup
-
-Use these settings for the TSN Stock Render service:
-
-```txt
-Build Command: bash ./render-build.sh
-Start Command: npm start
-```
-
-Required environment variables:
-
-```txt
-TSN_API_BASE_URL=https://your-normal-tsn.onrender.com
-TSN_API_CONNECT_TIMEOUT_MS=30000
-TSN_API_RETRY_COUNT=2
-MONGODB_URI=mongodb+srv://USERNAME:PASSWORD@cluster0.xxxxx.mongodb.net/tsn_stock?retryWrites=true&w=majority
-NODE_ENV=production
-NODE_VERSION=20.12.2
-NPM_CONFIG_AUDIT=false
-NPM_CONFIG_FUND=false
-```
-
-Optional:
-
-```txt
-MONGODB_DATABASE=tsn_stock
-MONGODB_COLLECTION=stockSnapshots
-TSN_STOCK_REFRESH_MS=2000
-TSN_STOCK_MAX_HISTORY=302400
-TSN_STOCK_RESET_KEY=optional-secret-key
-TSN_STOCK_RESET_PRICE=100
-TSN_STOCK_TARGET_BASE_PRICE=100
-TSN_STOCK_AUTO_REBASE=true
-TSN_STOCK_AUTO_REBASE_THRESHOLD=1.8
-TSNM_EARN_PER_MINUTE=10
-TSNM_MAX_REWARD_MINUTES_PER_TICK=30
-MONGODB_WALLET_COLLECTION=tsnMoneyWallets
-MONGODB_TRADE_COLLECTION=tsnMoneyTrades
-```
-
-`TSN_STOCK_MAX_HISTORY=302400` means about 7 days of 2-second snapshots if activity constantly changes. For about 6 hours, use `TSN_STOCK_MAX_HISTORY=10800`.
-
-`TSN_STOCK_TARGET_BASE_PRICE=100` keeps the stock centered around 100. If your old MongoDB history is already around 500, `TSN_STOCK_AUTO_REBASE=true` automatically scales the saved history down the first time the app runs after deployment.
-
-
-### Price stability + down-move fix
-
-This version uses event-driven price ticks. If online users, messages/hour, posts/hour, and activity score are effectively unchanged, the stock holds still and shows `0` movement instead of bouncing `+4 / -4 / +4 / -4`.
-
-The price now moves both ways:
-
-- Activity increases → the stock can move up.
-- Activity decreases → the stock can move down.
-- No meaningful change → the stock stays flat.
-- No activity → the stock slowly drifts down by `TSN_STOCK_QUIET_DECAY_PER_TICK`.
-
-`TSN_STOCK_DOWNTURN_STRENGTH` controls how strongly falling activity pushes the price down. The optional epsilon settings above control how small a rolling-rate change must be before it counts as a real stock event.
-
-## Where to find `MONGODB_URI`
-
-1. Go to MongoDB Atlas.
-2. Open your project.
-3. Go to **Database**.
-4. Click **Connect** on your cluster.
-5. Choose **Drivers**.
-6. Copy the connection string.
-7. Replace `<password>` with your database user's password.
-8. Make sure the database name is included before the `?`, for example `/tsn_stock?retryWrites=true...`.
-
-Example:
-
-```txt
-mongodb+srv://tsnuser:YOUR_PASSWORD@cluster0.xxxxx.mongodb.net/tsn_stock?retryWrites=true&w=majority
-```
-
-## Important MongoDB Atlas settings
-
-In Atlas, also check:
-
-- **Database Access**: your database user exists and has read/write permissions.
-- **Network Access**: allow Render to connect. For easiest setup, add `0.0.0.0/0` while testing.
-- Your password is URL-safe. If it has special characters, create a simpler MongoDB password or URL-encode it.
-
-## Local setup
-
-```bash
-npm install --omit=dev --no-audit --no-fund
-npm start
-```
-
-Open:
-
-```txt
-http://localhost:3010
-```
-
-## Endpoints
-
-```txt
-GET /api/stock
-GET /api/history
-GET /api/wallet?playerId=...
-POST /api/wallet/tick
-POST /api/trade
-GET /healthz
-POST /api/reset  # disabled by default; returns 410 unless TSN_STOCK_ENABLE_RESET=true
-```
-
-## What affects the price?
-
-TSN Stock is fictional. The standalone TSN Stock server calculates the price from the previous saved price plus current activity. This version is active/bullish, but it is also rebased around 100 so the price does not permanently drift toward 500+. The price changes based on:
-
-- online users
-- private messages + global comments per hour
-- global posts per hour
-- expected activity for the current time of day
-
-It is not a real stock and is not financial advice.
-
-## Keeping the stock around 100
-
-This version adds automatic rebalancing. If the latest saved MongoDB price is much higher than the target base, for example around 500, the server scales the saved chart history down so the latest point lands around 100.
-
-Important environment variables:
-
-```txt
-TSN_STOCK_TARGET_BASE_PRICE=100
-TSN_STOCK_AUTO_REBASE=true
-TSN_STOCK_AUTO_REBASE_THRESHOLD=1.8
-TSNM_EARN_PER_MINUTE=10
-TSNM_MAX_REWARD_MINUTES_PER_TICK=30
-MONGODB_WALLET_COLLECTION=tsnMoneyWallets
-MONGODB_TRADE_COLLECTION=tsnMoneyTrades
-```
-
-With those defaults, if the newest saved price is above about `180`, TSN Stock automatically rebases history around `100`. The public Reset button has been removed; history reset is disabled by default.
-
-
-## If the number does not move
-
-Use this fixed version. The old MongoDB URI version could save history but still trusted the original TSN API price too much. This version calculates the price inside TSN Stock from:
-
-- latest saved MongoDB price
-- online users
-- messages per hour
-- posts per hour
-- time-of-day expected activity
-
-You can force a new snapshot by opening:
-
-```txt
-/api/stock?force=1
-```
-
-
-## Reset removed / disabled
-
-The chart page no longer has a public Reset button. The backend `/api/reset` route returns `410` by default. This prevents normal users from wiping stock history.
-
-Only enable reset temporarily if you are debugging as the site owner:
+Use this only if the normal TSN API login is missing or unreliable. It must point to the **normal TSN database**, not the TSN-S history database.
 
 ```env
-TSN_STOCK_ENABLE_RESET=true
-TSN_STOCK_RESET_KEY=your-secret-reset-key
-```
-
-Keep `TSN_STOCK_ENABLE_RESET=false` on the public Render service.
-
-## TSNM / trading system
-
-TSNM is fictional. It is not real money, crypto, gambling, or financial trading. It is only an internal game/points system for TSN Stock.
-
-How it works:
-
-- Each browser gets a local `playerId` saved in `localStorage`.
-- The server creates a wallet for that `playerId`.
-- Every full online minute gives the user `10 TSNM` by default.
-- Users can buy TSN Stock at the current TSN Stock price.
-- Users can sell TSN Stock back into TSNM.
-- Wallets and trades are saved in MongoDB when `MONGODB_URI` is configured.
-
-Optional TSNM settings:
-
-```txt
-TSNM_EARN_PER_MINUTE=10
-TSNM_MAX_REWARD_MINUTES_PER_TICK=30
-MONGODB_WALLET_COLLECTION=tsnMoneyWallets
-MONGODB_TRADE_COLLECTION=tsnMoneyTrades
-```
-
-`TSNM_MAX_REWARD_MINUTES_PER_TICK=30` prevents someone from closing the tab for days and then claiming a huge amount at once.
-
-
-## Chart time ranges
-
-The TSN-S graph now has selectable periods:
-
-- 10 minutes
-- 30 minutes
-- 1 hour
-- 6 hours
-- 1 day
-- 7 days
-- All available history
-
-The frontend asks `/api/history?range=...` for the selected period and still adds the latest live price point to the chart. The chart history is refreshed about every 20 seconds, while the stock price itself can still update faster.
-
-Optional env vars:
-
-```env
-TSN_STOCK_HISTORY_API_MAX_POINTS=1400
-TSN_STOCK_MAX_HISTORY=302400
-TSN_STOCK_PAYLOAD_HISTORY_POINTS=720
-```
-
-`TSN_STOCK_HISTORY_API_MAX_POINTS` controls how many points the graph API returns after downsampling. For long periods like 1 day or 7 days, the server down-samples the saved MongoDB history so the browser stays fast.
-
-`TSN_STOCK_MAX_HISTORY` controls how many saved MongoDB snapshots the app can keep/load. At the default 2-second refresh, `302400` is about 7 days. The graph API then downsamples that history so long ranges do not lag the browser.
-
-
-## Login fix / original TSN account login
-
-TSN-S can now log users in in two ways:
-
-1. Directly through the original TSN MongoDB database. This is recommended because it works even if the original TSN API is older.
-2. Through the original TSN API at `TSN_API_BASE_URL`.
-
-Recommended Render environment variables for login:
-
-```env
-TSN_API_BASE_URL=https://YOUR-NORMAL-TSN.onrender.com
-MONGODB_URI=mongodb+srv://USERNAME:PASSWORD@cluster0.xxxxx.mongodb.net/tsn_stock?retryWrites=true&w=majority
-TSN_ORIGINAL_MONGODB_URI=mongodb+srv://USERNAME:PASSWORD@cluster0.xxxxx.mongodb.net/tsn?retryWrites=true&w=majority
-TSN_ORIGINAL_MONGODB_DATABASE=tsn
-TSN_ORIGINAL_MONGODB_STATE_COLLECTION=app_state
-TSN_STOCK_SESSION_SECRET=make-this-a-long-random-secret
-TSN_DATA_ENCRYPTION_KEY=same-key-as-original-tsn
-NODE_VERSION=20.12.2
-NODE_ENV=production
-```
-
-If your original TSN and TSN-S use the same Atlas cluster, `TSN_ORIGINAL_MONGODB_URI` can use the same username/password as `MONGODB_URI`, but the database should be the original TSN database, normally `tsn`, not `tsn_stock`.
-
-
-## Fix: TSN-S cannot connect to original TSN
-
-This version can connect in two ways:
-
-1. **Primary:** `TSN_API_BASE_URL` calls the original TSN endpoint `/api/public/stock`.
-2. **Fallback:** `TSN_ORIGINAL_MONGODB_URI` reads activity directly from the original TSN MongoDB database if the API endpoint is missing/asleep/broken.
-
-Recommended TSN-S environment variables on Render:
-
-```env
-TSN_API_BASE_URL=https://YOUR-NORMAL-TSN.onrender.com
-MONGODB_URI=mongodb+srv://USERNAME:PASSWORD@cluster0.xxxxx.mongodb.net/tsn_stock?retryWrites=true&w=majority
-
 TSN_ORIGINAL_MONGODB_URI=mongodb+srv://USERNAME:PASSWORD@cluster0.xxxxx.mongodb.net/tsn?retryWrites=true&w=majority
 TSN_ORIGINAL_MONGODB_DATABASE=tsn
 TSN_ORIGINAL_MONGODB_STATE_COLLECTION=app_state
 TSN_ORIGINAL_MONGODB_STATE_ID=main
-
-TSN_STOCK_SESSION_SECRET=make-this-a-long-random-secret
-TSN_DATA_ENCRYPTION_KEY=same-key-as-original-tsn-if-your-tsn-uses-encrypted-usernames
-NODE_ENV=production
-NODE_VERSION=20.12.2
-NPM_CONFIG_AUDIT=false
-NPM_CONFIG_FUND=false
+TSN_DATA_ENCRYPTION_KEY=your-original-tsn-data-encryption-key
 ```
 
-After deploying, test this URL in your browser:
-
-```txt
-https://YOUR-TSN-STOCK.onrender.com/api/source-test
-```
-
-It shows whether TSN-S can reach the original TSN API and/or the MongoDB fallback.
-
-## Render npm crash fix
-
-If Render fails with `npm error Exit handler never called!`, use these settings:
-
-```txt
-Build Command:
-npm cache clean --force && npm install --omit=dev --no-audit --no-fund --prefer-online
-
-Start Command:
-node server.js
-```
-
-Set this environment variable on Render:
-
-```env
-NODE_VERSION=20.12.2
-```
-
-Then use **Manual Deploy → Clear build cache & deploy**.
-
-
-## Render ETIMEDOUT fix
-
-If Render fails with a URL like `an internal/private npm registry URL ending in whatwg-url-14.2.0.tgz`, npm is using a bad/internal package URL from an old lockfile.
-
-Use these Render settings:
+## Render commands
 
 ```txt
 Build Command: bash ./render-build.sh
 Start Command: node server.js
 ```
 
-Also add these Render environment variables:
+After uploading, use:
 
 ```txt
-NODE_VERSION=20.12.2
-NODE_ENV=production
-NPM_CONFIG_REGISTRY=https://registry.npmjs.org/
-NPM_CONFIG_PACKAGE_LOCK=false
-NPM_CONFIG_AUDIT=false
-NPM_CONFIG_FUND=false
-NPM_CONFIG_PROGRESS=false
+Manual Deploy → Clear build cache & deploy
 ```
 
-Then deploy with **Manual Deploy → Clear build cache & deploy**.
+## Testing
 
-Do not use `npm ci` for this package on Render. `npm ci` requires a lockfile and can reuse broken/internal package URLs.
-
-## v1.1.7 wallet loading fix
-
-This version makes the TSNM wallet load independently from the normal TSN activity/stock source. Earlier versions could show a wallet loading failure if normal TSN was asleep, slow on Render, or if the stock-source request took longer than the frontend wallet timeout.
-
-New tools:
-
-- `GET /api/wallet` returns the wallet without blocking on a live TSN stock fetch.
-- `POST /api/wallet/tick` rewards online TSNM without blocking on normal TSN.
-- `GET /api/wallet/test` checks the logged-in user's wallet, database, collection, and write access.
-- The wallet card has a **Test wallet** button.
-
-For permanent wallets, TSN-S must have:
-
-```txt
-MONGODB_URI=your-tsn-stock-mongodb-uri
-MONGODB_DATABASE=tsn_stock
-MONGODB_WALLET_COLLECTION=tsnMoneyWallets
-MONGODB_TRADE_COLLECTION=tsnMoneyTrades
-```
-
-If `/api/wallet/test` says `memory`, the wallet is not permanent yet.
-
-
-## v1.1.7 buy/sell fetch-abort fix
-
-If the browser said `Fetch is aborted` when buying TSN Stock, the old frontend timeout was too short. Buying and selling now allow up to 60 seconds, and the backend no longer blocks trades on a forced live refresh from normal TSN. Trades use the best known/cached TSN-S price, then refresh the live price in the background.
-
-Debug endpoint after login:
-
-```txt
-/api/trade/test
-```
-
-If this works but buying still fails, check the Render logs for MongoDB write errors or insufficient TSNM balance.
-
-
-## v1.1.8 TSN-S opening hours
-
-TSN-S now has scheduled opening hours in the Europe/Copenhagen timezone by default. Users can still open the website and view their wallet/stock chart while closed, but buying, selling, and TSNM online-minute rewards are paused outside the open windows.
-
-Open windows:
-
-```txt
-08:10-09:30: TSN-S open
-09:30-09:50: TSN-S closed
-09:50-11:15: TSN-S open
-11:15-12:00: TSN-S closed
-12:00-13:30: TSN-S open
-13:30-08:10: TSN-S closed
-```
-
-Useful endpoint:
-
-```txt
-GET /api/market-hours
-```
-
-Optional env var:
-
-```txt
-TSN_STOCK_MARKET_TIMEZONE=Europe/Copenhagen
-```
+- Open TSN-S. You should only see the login screen.
+- Try a username that is not `ceo`. It should show `access denied`.
+- Log in with the normal TSN account whose username is exactly `ceo`.
+- The dashboard should then load price, graph, online users, messages/hour, and global chats/hour.
+- `/api/stock` and `/api/history` require the CEO login token.
+- `/api/wallet` and `/api/trade` return disabled/removed responses.

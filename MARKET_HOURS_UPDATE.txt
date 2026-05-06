@@ -1,20 +1,4 @@
-TSN-S v1.1.8 market-hours update
+TSN-S market-hours note
 
-Added scheduled open/closed logic:
-- 08:10-09:30 open
-- 09:30-09:50 closed
-- 09:50-11:15 open
-- 11:15-12:00 closed
-- 12:00-13:30 open
-- 13:30-08:10 closed
-
-The schedule uses Europe/Copenhagen by default via TSN_STOCK_MARKET_TIMEZONE.
-
-While closed:
-- Buy/sell requests return HTTP 423 with market status.
-- TSNM online-minute rewards are paused.
-- Wallet and chart can still load in view-only mode.
-- Frontend shows open/closed status and disables buy/sell buttons.
-
-New endpoint:
-GET /api/market-hours
+The dashboard still shows the TSN-S open/closed status using Europe/Copenhagen time.
+Because v1.2.0 is read-only, the schedule is informational only.

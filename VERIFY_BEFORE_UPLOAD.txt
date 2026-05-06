@@ -1,34 +1,28 @@
-Before uploading to GitHub, open package.json.
+Before uploading to GitHub:
 
-The FIRST character must be:
-{
+1. Open package.json.
+   The first character must be {.
+   If it starts with PORT=3010 or TSN_API_BASE_URL, it is wrong.
 
-If package.json starts with PORT=3010 or TSN_API_BASE_URL, it is WRONG.
-Do not paste environment variables into package.json.
-Put them only in Render -> Environment.
+2. Render commands:
+   Build Command: bash ./render-build.sh
+   Start Command: node server.js
 
-Render settings:
-Build Command: npm install --omit=dev --no-audit --no-fund
-Start Command: npm start
-Root Directory: leave empty if these files are in the repo root.
+3. Required behavior:
+   - TSN-S opens to a login screen only.
+   - Only username ceo can log in.
+   - Other usernames show access denied.
+   - Wallet is gone.
+   - Buy/sell stock is gone.
+   - Dashboard shows price, graph, online users, messages/hour, and global chats/hour.
 
+4. Required env vars:
+   TSN_API_BASE_URL=https://your-normal-tsn.onrender.com
+   TSN_STOCK_ALLOWED_USERNAME=ceo
+   TSN_STOCK_SESSION_SECRET=long-random-secret
+   MONGODB_URI=your-tsn-s-history-mongodb-uri
+   MONGODB_DATABASE=tsn_stock
+   MONGODB_COLLECTION=stockSnapshots
 
-TSN connection check:
-- TSN_API_BASE_URL must be your NORMAL TSN root URL, not TSN-S.
-- Example: https://your-normal-tsn.onrender.com
-- Do not add /api at the end.
-- Optional: TSN_API_CONNECT_TIMEOUT_MS=30000 and TSN_API_RETRY_COUNT=2.
-- Open /api/source-test on TSN-S after deploy.
-
-Wallet test after deploy:
-- Log in on TSN-S.
-- Press Test wallet or open /api/wallet/test.
-- It should say Wallet can load and save.
-
-TSN_STOCK_MARKET_TIMEZONE=Europe/Copenhagen
-
-
-Anti-spam check:
-- Reset button should NOT appear next to Opdater.
-- /api/reset should return 410 unless TSN_STOCK_ENABLE_RESET=true.
-- Spammy single-user message/post bursts should show raw/effective counts in the stock disclaimer and should not pump the price.
+5. Deploy with:
+   Manual Deploy -> Clear build cache & deploy

@@ -62,12 +62,10 @@ const ORIGINAL_TSN_DATABASE = String(process.env.TSN_ORIGINAL_MONGODB_DATABASE |
 const ORIGINAL_TSN_STATE_COLLECTION = String(process.env.TSN_ORIGINAL_MONGODB_STATE_COLLECTION || 'app_state');
 const ORIGINAL_TSN_STATE_ID = String(process.env.TSN_ORIGINAL_MONGODB_STATE_ID || 'main');
 const STOCK_SESSION_SECRET = String(process.env.TSN_STOCK_SESSION_SECRET || process.env.JWT_SECRET || process.env.SESSION_SECRET || 'dev-tsn-stock-session-secret-change-me');
+const TSN_STOCK_ALLOWED_USERNAME = normalizeUsername(process.env.TSN_STOCK_ALLOWED_USERNAME || 'ceo');
+const ACCESS_DENIED_MESSAGE = 'access denied';
 const TSN_DATA_ENCRYPTION_KEY = String(process.env.TSN_DATA_ENCRYPTION_KEY || process.env.JWT_SECRET || 'dev-data-encryption-key-change-before-release-32chars');
 const COLLECTION = String(process.env.MONGODB_COLLECTION || 'stockSnapshots');
-const WALLET_COLLECTION = String(process.env.MONGODB_WALLET_COLLECTION || 'tsnMoneyWallets');
-const TRADE_COLLECTION = String(process.env.MONGODB_TRADE_COLLECTION || 'tsnMoneyTrades');
-const TSNM_EARN_PER_MINUTE = Number(process.env.TSNM_EARN_PER_MINUTE || 10);
-const TSNM_MAX_REWARD_MINUTES_PER_TICK = Number(process.env.TSNM_MAX_REWARD_MINUTES_PER_TICK || 30);
 const MARKET_TIMEZONE = String(process.env.TSN_STOCK_MARKET_TIMEZONE || process.env.TSN_MARKET_TIMEZONE || 'Europe/Copenhagen');
 const MARKET_WINDOWS = [
   { start: '08:10', end: '09:30', label: 'Morning session' },
@@ -101,13 +99,10 @@ const RESET_ENABLED = String(process.env.TSN_STOCK_ENABLE_RESET || 'false').toLo
 const PERSISTENCE_ENABLED = Boolean(MONGODB_URI);
 let mongoClient = null;
 let mongoCollection = null;
-let mongoWalletCollection = null;
-let mongoTradeCollection = null;
 let originalTsnMongoClient = null;
 
 let cachedPayload = null;
 let cachedAt = 0;
-let backgroundStockRefreshInFlight = null;
 let memoryHistory = [];
 
 const MIME_TYPES = {
@@ -234,30 +229,7 @@ function getMarketStatus(date = new Date()) {
   };
 }
 
-function makeMarketClosedError() {
-  const status = getMarketStatus();
-  const error = new Error(`${status.label}. ${status.nextChangeLabel}.`);
-  error.statusCode = 423;
-  error.marketStatus = status;
-  return error;
-}
 
-function countOpenRewardMinutesBetween(startMs, endMs) {
-  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return 0;
-  const fullMinutes = Math.floor((endMs - startMs) / 60_000);
-  if (fullMinutes <= 0) return 0;
-  const maxLookbackMinutes = Math.min(fullMinutes, 7 * 24 * 60);
-  const firstMinuteStart = endMs - maxLookbackMinutes * 60_000;
-  let openMinutes = 0;
-  for (let i = 0; i < maxLookbackMinutes; i += 1) {
-    const sampleAt = firstMinuteStart + i * 60_000 + 30_000;
-    if (getMarketStatus(new Date(sampleAt)).open) {
-      openMinutes += 1;
-      if (openMinutes >= Math.max(1, TSNM_MAX_REWARD_MINUTES_PER_TICK)) break;
-    }
-  }
-  return clamp(openMinutes, 0, Math.max(1, TSNM_MAX_REWARD_MINUTES_PER_TICK));
-}
 
 function safeStaticPath(urlPath) {
   let cleanPath = 'index.html';
@@ -474,7 +446,7 @@ async function directOriginalTsnLogin(username, password) {
     error.statusCode = 401;
     throw error;
   }
-  const publicUser = publicTsnUser({
+  const publicUser = assertCeoAccess({
     id: user.id,
     username: getOriginalUserField(user, 'username'),
     name: getOriginalUserField(user, 'name'),
@@ -499,7 +471,34 @@ function publicTsnUser(user) {
   };
 }
 
+function isAllowedCeoUser(user) {
+  return normalizeUsername(user?.username || user?.name || '') === TSN_STOCK_ALLOWED_USERNAME;
+}
+
+function makeAccessDeniedError() {
+  const error = new Error(ACCESS_DENIED_MESSAGE);
+  error.statusCode = 403;
+  error.accessDenied = true;
+  return error;
+}
+
+function assertCeoAccess(user) {
+  const publicUser = publicTsnUser(user);
+  if (!isAllowedCeoUser(publicUser)) throw makeAccessDeniedError();
+  return publicUser;
+}
+
+function disabledCommerceResponse(res) {
+  return sendJson(res, 410, {
+    ok: false,
+    error: 'Wallet and stock trading are removed. TSN-S is now a read-only CEO dashboard.'
+  });
+}
+
 async function proxyTsnLogin(username, password) {
+  if (normalizeUsername(username) !== TSN_STOCK_ALLOWED_USERNAME) {
+    throw makeAccessDeniedError();
+  }
   const directErrors = [];
   if (EXPLICIT_ORIGINAL_TSN_MONGODB_URI && ORIGINAL_TSN_MONGODB_URI && bcrypt && jwt && MongoClient) {
     try {
@@ -530,7 +529,7 @@ async function proxyTsnLogin(username, password) {
       throw error;
     }
     // Convert the original TSN token into a TSN-S token, so TSN-S does not break if the original token format changes.
-    const user = publicTsnUser(data.user);
+    const user = assertCeoAccess(data.user);
     return { token: jwt ? signStockSession(user) : data.token, user, authMode: 'api' };
   } catch (error) {
     const message = error.data?.error || error.message || 'Login fejlede.';
@@ -550,14 +549,14 @@ async function getTsnSession(req) {
   }
 
   const stockUser = verifyStockSession(token);
-  if (stockUser) return { token, user: publicTsnUser(stockUser) };
+  if (stockUser) return { token, user: assertCeoAccess(stockUser) };
 
   // Backward compatibility for older TSN-S tokens that were original TSN JWTs.
   if (TSN_API_BASE_URL) {
     const data = await fetchJsonWithRetry(joinApiUrl(TSN_API_BASE_URL, '/api/me'), {
       headers: { Authorization: `Bearer ${token}` }
     }, TSN_API_CONNECT_TIMEOUT_MS);
-    if (data?.user) return { token, user: publicTsnUser(data.user) };
+    if (data?.user) return { token, user: assertCeoAccess(data.user) };
   }
 
   const error = new Error('Din TSN-S-session kunne ikke bekræftes. Log ind igen.');
@@ -565,10 +564,6 @@ async function getTsnSession(req) {
   throw error;
 }
 
-async function walletForRequest(req) {
-  const session = await getTsnSession(req);
-  return { playerId: session.user.id, playerName: session.user.name || session.user.username, user: session.user };
-}
 
 async function getMongoCollection() {
   if (!PERSISTENCE_ENABLED) throw new Error('MONGODB_URI is not configured');
@@ -596,55 +591,6 @@ async function getMongoDb() {
   return mongoClient.db(DATABASE);
 }
 
-async function getWalletCollection() {
-  if (!PERSISTENCE_ENABLED) throw new Error('MONGODB_URI is not configured');
-  if (mongoWalletCollection) return mongoWalletCollection;
-  const db = await getMongoDb();
-  mongoWalletCollection = db.collection(WALLET_COLLECTION);
-  await mongoWalletCollection.createIndex({ playerId: 1 }, { unique: true });
-  await mongoWalletCollection.createIndex({ updatedAt: -1 });
-  return mongoWalletCollection;
-}
-
-async function getTradeCollection() {
-  if (!PERSISTENCE_ENABLED) throw new Error('MONGODB_URI is not configured');
-  if (mongoTradeCollection) return mongoTradeCollection;
-  const db = await getMongoDb();
-  mongoTradeCollection = db.collection(TRADE_COLLECTION);
-  await mongoTradeCollection.createIndex({ playerId: 1, createdAt: -1 });
-  await mongoTradeCollection.createIndex({ createdAt: -1 });
-  return mongoTradeCollection;
-}
-
-function sanitizePlayerId(value) {
-  return String(value || '').trim().replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 80);
-}
-
-function sanitizePlayerName(value) {
-  return String(value || 'TSN Investor').trim().replace(/[<>]/g, '').slice(0, 40) || 'TSN Investor';
-}
-
-function makeDefaultWallet(playerId, playerName) {
-  const now = new Date().toISOString();
-  return {
-    playerId,
-    playerName: sanitizePlayerName(playerName),
-    balance: 0,
-    shares: 0,
-    avgBuyPrice: 0,
-    realizedProfit: 0,
-    totalEarned: 0,
-    totalBought: 0,
-    totalSold: 0,
-    lastRewardAt: now,
-    createdAt: now,
-    updatedAt: now
-  };
-}
-
-const memoryWallets = new Map();
-const memoryTrades = [];
-
 async function readJsonBody(req, maxBytes = 100_000) {
   return new Promise((resolve, reject) => {
     let body = '';
@@ -662,220 +608,6 @@ async function readJsonBody(req, maxBytes = 100_000) {
     });
     req.on('error', reject);
   });
-}
-
-async function getWallet(playerId, playerName) {
-  const cleanId = sanitizePlayerId(playerId);
-  if (!cleanId) throw new Error('Missing playerId');
-
-  if (!PERSISTENCE_ENABLED) {
-    if (!memoryWallets.has(cleanId)) memoryWallets.set(cleanId, makeDefaultWallet(cleanId, playerName));
-    const wallet = memoryWallets.get(cleanId);
-    if (playerName && wallet.playerName !== sanitizePlayerName(playerName)) wallet.playerName = sanitizePlayerName(playerName);
-    return wallet;
-  }
-
-  const collection = await getWalletCollection();
-  const now = new Date().toISOString();
-  const existing = await collection.findOne({ playerId: cleanId }, { projection: { _id: 0 } });
-  if (existing) {
-    if (playerName && existing.playerName !== sanitizePlayerName(playerName)) {
-      await collection.updateOne({ playerId: cleanId }, { $set: { playerName: sanitizePlayerName(playerName), updatedAt: now } });
-      existing.playerName = sanitizePlayerName(playerName);
-    }
-    return existing;
-  }
-  const wallet = makeDefaultWallet(cleanId, playerName);
-  await collection.insertOne(wallet);
-  return wallet;
-}
-
-function publicWallet(wallet, stockPrice = 100, reward = null) {
-  const balance = Number(wallet.balance) || 0;
-  const shares = Number(wallet.shares) || 0;
-  const portfolioValue = shares * (Number(stockPrice) || 0);
-  const netWorth = balance + portfolioValue;
-  const avgBuyPrice = Number(wallet.avgBuyPrice) || 0;
-  const unrealizedProfit = shares > 0 ? portfolioValue - shares * avgBuyPrice : 0;
-  return {
-    playerId: wallet.playerId,
-    playerName: wallet.playerName,
-    balance: Number(balance.toFixed(2)),
-    shares: Number(shares.toFixed(6)),
-    avgBuyPrice: Number(avgBuyPrice.toFixed(2)),
-    realizedProfit: Number((Number(wallet.realizedProfit) || 0).toFixed(2)),
-    unrealizedProfit: Number(unrealizedProfit.toFixed(2)),
-    totalEarned: Number((Number(wallet.totalEarned) || 0).toFixed(2)),
-    totalBought: Number((Number(wallet.totalBought) || 0).toFixed(2)),
-    totalSold: Number((Number(wallet.totalSold) || 0).toFixed(2)),
-    portfolioValue: Number(portfolioValue.toFixed(2)),
-    netWorth: Number(netWorth.toFixed(2)),
-    lastRewardAt: wallet.lastRewardAt,
-    updatedAt: wallet.updatedAt,
-    reward
-  };
-}
-
-async function saveWallet(wallet) {
-  wallet.updatedAt = new Date().toISOString();
-  if (!PERSISTENCE_ENABLED) {
-    memoryWallets.set(wallet.playerId, wallet);
-    return wallet;
-  }
-  const collection = await getWalletCollection();
-  await collection.updateOne({ playerId: wallet.playerId }, { $set: wallet }, { upsert: true });
-  return wallet;
-}
-
-function calculateReward(wallet) {
-  const marketStatus = getMarketStatus();
-  const nowMs = Date.now();
-  const lastMs = Date.parse(wallet.lastRewardAt || wallet.createdAt || new Date().toISOString()) || nowMs;
-
-  if (!marketStatus.open) {
-    return {
-      minutes: 0,
-      amount: 0,
-      nextRewardInMs: marketStatus.secondsUntilNextChange * 1000,
-      paused: true,
-      marketStatus
-    };
-  }
-
-  const cappedMinutes = countOpenRewardMinutesBetween(lastMs, nowMs);
-  const amount = Number((cappedMinutes * TSNM_EARN_PER_MINUTE).toFixed(2));
-  return {
-    minutes: cappedMinutes,
-    amount,
-    nextRewardInMs: Math.max(0, 60_000 - ((nowMs - lastMs) % 60_000)),
-    paused: false,
-    marketStatus
-  };
-}
-
-async function rewardOnlineMinutes(playerId, playerName) {
-  const wallet = await getWallet(playerId, playerName);
-  const reward = calculateReward(wallet);
-  if (reward.minutes > 0) {
-    const now = new Date();
-    wallet.balance = Number((Number(wallet.balance || 0) + reward.amount).toFixed(2));
-    wallet.totalEarned = Number((Number(wallet.totalEarned || 0) + reward.amount).toFixed(2));
-    wallet.lastRewardAt = new Date(now.getTime() - (Date.now() - Date.parse(wallet.lastRewardAt || now.toISOString())) % 60_000).toISOString();
-    await saveWallet(wallet);
-  } else if (reward.paused) {
-    wallet.lastRewardAt = new Date().toISOString();
-    await saveWallet(wallet);
-  }
-  return { wallet, reward };
-}
-
-async function recordTrade(trade) {
-  if (!PERSISTENCE_ENABLED) {
-    memoryTrades.push(trade);
-    while (memoryTrades.length > 500) memoryTrades.shift();
-    return;
-  }
-  const collection = await getTradeCollection();
-  await collection.insertOne(trade);
-}
-
-function bestKnownStockPrice() {
-  return Number(cachedPayload?.stock?.price) || Number(memoryHistory.at(-1)?.price) || TARGET_BASE_PRICE || 100;
-}
-
-function refreshStockInBackground(reason = 'background') {
-  if (backgroundStockRefreshInFlight) return backgroundStockRefreshInFlight;
-  backgroundStockRefreshInFlight = getStockPayload({ force: true })
-    .catch((error) => {
-      console.error(`Background TSN Stock refresh failed (${reason}):`, error.message);
-      return null;
-    })
-    .finally(() => {
-      backgroundStockRefreshInFlight = null;
-    });
-  return backgroundStockRefreshInFlight;
-}
-
-async function getCurrentStockPrice({ force = false } = {}) {
-  if (!force && cachedPayload?.stock?.price) return Number(cachedPayload.stock.price) || TARGET_BASE_PRICE || 100;
-  if (!force) return bestKnownStockPrice();
-  try {
-    const payload = await getStockPayload({ force: true });
-    return Number(payload?.stock?.price) || bestKnownStockPrice();
-  } catch {
-    return bestKnownStockPrice();
-  }
-}
-
-async function getPublicWalletFast(playerId, playerName, reward = null) {
-  const wallet = await getWallet(playerId, playerName);
-  return publicWallet(wallet, bestKnownStockPrice(), reward);
-}
-
-async function tradeStock({ playerId, playerName, type, quantity }) {
-  const cleanType = String(type || '').toLowerCase();
-  const qty = Number(quantity);
-  if (!['buy', 'sell'].includes(cleanType)) throw new Error('Trade type must be buy or sell');
-  if (!Number.isFinite(qty) || qty <= 0) throw new Error('Quantity must be higher than 0');
-  if (qty > 1_000_000) throw new Error('Quantity is too large');
-
-  const marketStatus = getMarketStatus();
-  if (!marketStatus.open) throw makeMarketClosedError();
-
-  const { wallet } = await rewardOnlineMinutes(playerId, playerName);
-  const price = await getCurrentStockPrice({ force: false });
-  refreshStockInBackground('after-trade');
-  const value = Number((qty * price).toFixed(2));
-  const now = new Date().toISOString();
-
-  if (cleanType === 'buy') {
-    if ((Number(wallet.balance) || 0) + 0.0001 < value) throw new Error('Not enough TSNM balance');
-    const oldShares = Number(wallet.shares) || 0;
-    const oldCost = oldShares * (Number(wallet.avgBuyPrice) || 0);
-    const newShares = oldShares + qty;
-    wallet.balance = Number((Number(wallet.balance || 0) - value).toFixed(2));
-    wallet.shares = Number(newShares.toFixed(6));
-    wallet.avgBuyPrice = Number(((oldCost + value) / newShares).toFixed(2));
-    wallet.totalBought = Number((Number(wallet.totalBought || 0) + value).toFixed(2));
-  } else {
-    if ((Number(wallet.shares) || 0) + 0.000001 < qty) throw new Error('Not enough TSN Stock shares');
-    const costBasis = qty * (Number(wallet.avgBuyPrice) || 0);
-    const profit = value - costBasis;
-    wallet.balance = Number((Number(wallet.balance || 0) + value).toFixed(2));
-    wallet.shares = Number((Number(wallet.shares || 0) - qty).toFixed(6));
-    if (wallet.shares <= 0.000001) {
-      wallet.shares = 0;
-      wallet.avgBuyPrice = 0;
-    }
-    wallet.realizedProfit = Number((Number(wallet.realizedProfit || 0) + profit).toFixed(2));
-    wallet.totalSold = Number((Number(wallet.totalSold || 0) + value).toFixed(2));
-  }
-
-  await saveWallet(wallet);
-  const trade = {
-    playerId: wallet.playerId,
-    playerName: wallet.playerName,
-    type: cleanType,
-    quantity: Number(qty.toFixed(6)),
-    price: Number(price.toFixed(2)),
-    value,
-    createdAt: now
-  };
-  await recordTrade(trade);
-  return { wallet, trade, price };
-}
-
-
-function asArray(value) {
-  return Array.isArray(value) ? value : [];
-}
-
-function countSince(items, sinceMs, predicate = null) {
-  return asArray(items).filter((item) => {
-    const createdAt = new Date(item?.createdAt || item?.updatedAt || 0).getTime();
-    if (!Number.isFinite(createdAt) || createdAt < sinceMs) return false;
-    return predicate ? predicate(item) : true;
-  }).length;
 }
 
 function normalizeSpamText(value) {
@@ -1179,6 +911,7 @@ async function fetchOriginalStockFromMongo() {
       privateMessagesPerHour,
       globalCommentsPerHour,
       postsPerHour,
+      globalChatsPerHour: postsPerHour,
       hour: now.getHours(),
       expectedOnline: Number(expectedOnline.toFixed(2)),
       expectedMessagesPerHour: Number(expectedMessagesPerHour.toFixed(2)),
@@ -1190,6 +923,7 @@ async function fetchOriginalStockFromMongo() {
       rawPrivateMessagesPerHour: antiSpamStats.rawPrivateMessagesPerHour,
       rawGlobalCommentsPerHour: antiSpamStats.rawGlobalCommentsPerHour,
       rawPostsPerHour: antiSpamStats.rawPostsPerHour,
+      rawGlobalChatsPerHour: antiSpamStats.rawPostsPerHour,
       uniqueMessageUsers: antiSpamStats.uniqueMessageUsers,
       uniquePostUsers: antiSpamStats.uniquePostUsers,
       uniqueContributors: antiSpamStats.uniqueContributors,
@@ -1209,7 +943,8 @@ function normalizeSourceStock(data) {
     onlineUsers: Number(sourceMetrics.onlineUsers) || 0,
     usersTotal: Number(sourceMetrics.usersTotal || sourceMetrics.totalUsers) || undefined,
     messagesPerHour: Number(sourceMetrics.messagesPerHour) || 0,
-    postsPerHour: Number(sourceMetrics.postsPerHour) || 0,
+    postsPerHour: Number(sourceMetrics.globalChatsPerHour ?? sourceMetrics.postsPerHour) || 0,
+    globalChatsPerHour: Number(sourceMetrics.globalChatsPerHour ?? sourceMetrics.postsPerHour) || 0,
     activityScore: Number(sourceMetrics.activityScore) || 0,
     source: sourceMetrics.source || 'original-tsn-api'
   });
@@ -1292,6 +1027,8 @@ function normalizeMetrics(metrics = {}) {
     usersTotal,
     messagesPerHour,
     postsPerHour,
+    globalChatsPerHour: postsPerHour,
+    rawGlobalChatsPerHour: protectedMetrics.rawPostsPerHour,
     hour,
     expectedOnline: Number(expectedOnline.toFixed(2)),
     expectedMessagesPerHour: Number(expectedMessagesPerHour.toFixed(2)),
@@ -1833,7 +1570,8 @@ const server = http.createServer((req, res) => {
       antiSpam: { enabled: ANTI_SPAM_ENABLED, messageCapPerUserPerHour: ANTI_SPAM_MESSAGE_CAP_PER_USER_PER_HOUR, postCapPerUserPerHour: ANTI_SPAM_POST_CAP_PER_USER_PER_HOUR, duplicateWindowMs: ANTI_SPAM_DUPLICATE_WINDOW_MS },
       persistence: PERSISTENCE_ENABLED ? 'mongodb-uri' : 'memory',
       marketStatus: getMarketStatus(),
-      tsnMoney: { earnPerMinute: TSNM_EARN_PER_MINUTE, walletCollection: WALLET_COLLECTION, tradeCollection: TRADE_COLLECTION, walletDatabase: PERSISTENCE_ENABLED ? DATABASE : null, walletPersistence: PERSISTENCE_ENABLED ? 'mongodb-uri' : 'memory' },
+      access: { loginRequired: true, allowedUsername: TSN_STOCK_ALLOWED_USERNAME },
+      commerce: { walletEnabled: false, tradingEnabled: false },
       tsnApiConfigured: Boolean(TSN_API_BASE_URL),
       tsnApiEnvName: TSN_API_ENV.name || null,
       tsnApiBaseUrl: TSN_API_BASE_URL || null,
@@ -1868,14 +1606,14 @@ const server = http.createServer((req, res) => {
   }
 
   if (urlPath === '/api/source-test') {
-    Promise.allSettled([
+    getTsnSession(req).then(() => Promise.allSettled([
       TSN_API_BASE_URL
         ? fetchOriginalStockFromApi()
         : Promise.reject(new Error('TSN_API_BASE_URL is missing')),
       EXPLICIT_ORIGINAL_TSN_MONGODB_URI && ORIGINAL_TSN_MONGODB_URI && MongoClient
         ? fetchOriginalStockFromMongo()
         : Promise.reject(new Error('TSN_ORIGINAL_MONGODB_URI fallback is not configured. Optional if the API test works.'))
-    ]).then(([apiResult, mongoResult]) => sendJson(res, 200, {
+    ])).then(([apiResult, mongoResult]) => sendJson(res, 200, {
       ok: apiResult.status === 'fulfilled' || mongoResult.status === 'fulfilled',
       api: {
         configured: Boolean(TSN_API_BASE_URL),
@@ -1897,17 +1635,21 @@ const server = http.createServer((req, res) => {
         metrics: mongoResult.status === 'fulfilled' ? mongoResult.value.metrics : null
       },
       setupHint: 'TSN_API_BASE_URL must be the normal TSN site root, for example https://your-tsn.onrender.com. Do not use the TSN-S URL.'
-    })).catch((error) => sendJson(res, 500, { ok: false, error: error.message }));
+    })).catch((error) => sendJson(res, error.statusCode || 500, { ok: false, error: error.message, accessDenied: Boolean(error.accessDenied) }));
     return;
   }
 
   if (urlPath === '/api/market-hours') {
     if (req.method !== 'GET') return sendJson(res, 405, { ok: false, error: 'Use GET for market hours.' });
-    return sendJson(res, 200, { ok: true, market: getMarketStatus(), fictional: true });
+    getTsnSession(req)
+      .then(() => sendJson(res, 200, { ok: true, market: getMarketStatus(), fictional: true }))
+      .catch((error) => sendJson(res, error.statusCode || 401, { ok: false, error: error.message, accessDenied: Boolean(error.accessDenied) }));
+    return;
   }
 
   if (urlPath === '/api/stock') {
-    getStockPayload({ force: url.searchParams.get('force') === '1' })
+    getTsnSession(req)
+      .then(() => getStockPayload({ force: url.searchParams.get('force') === '1' }))
       .then((payload) => sendJson(res, 200, payload))
       .catch((error) => sendJson(res, error.statusCode || 500, {
         ok: false,
@@ -1919,132 +1661,12 @@ const server = http.createServer((req, res) => {
   }
 
 
-  if (urlPath === '/api/wallet') {
-    if (req.method !== 'GET') return sendJson(res, 405, { ok: false, error: 'Use GET for wallet.' });
-    walletForRequest(req)
-      .then((identity) => getPublicWalletFast(identity.playerId, identity.playerName)
-        .then((wallet) => ({ identity, wallet })))
-      .then(({ identity, wallet }) => sendJson(res, 200, {
-        ok: true,
-        user: identity.user,
-        wallet,
-        earnPerMinute: TSNM_EARN_PER_MINUTE,
-        persistence: PERSISTENCE_ENABLED ? 'mongodb-uri' : 'memory',
-        walletDatabase: PERSISTENCE_ENABLED ? DATABASE : null,
-        walletCollection: WALLET_COLLECTION,
-        market: getMarketStatus(),
-        fictional: true
-      }))
-      .catch((error) => sendJson(res, error.statusCode || 400, { ok: false, error: error.data?.error || error.message }));
-    return;
+  if (urlPath === '/api/wallet' || urlPath === '/api/wallet/tick' || urlPath === '/api/wallet/test') {
+    return disabledCommerceResponse(res);
   }
 
-  if (urlPath === '/api/wallet/tick') {
-    if (req.method !== 'POST') return sendJson(res, 405, { ok: false, error: 'Use POST for wallet tick.' });
-    walletForRequest(req)
-      .then((identity) => rewardOnlineMinutes(identity.playerId, identity.playerName)
-        .then((result) => ({ identity, result })))
-      .then(({ identity, result }) => sendJson(res, 200, {
-        ok: true,
-        user: identity.user,
-        wallet: publicWallet(result.wallet, bestKnownStockPrice(), result.reward),
-        earnPerMinute: TSNM_EARN_PER_MINUTE,
-        persistence: PERSISTENCE_ENABLED ? 'mongodb-uri' : 'memory',
-        walletDatabase: PERSISTENCE_ENABLED ? DATABASE : null,
-        walletCollection: WALLET_COLLECTION,
-        market: result.reward.marketStatus || getMarketStatus(),
-        fictional: true
-      }))
-      .catch((error) => sendJson(res, error.statusCode || 400, { ok: false, error: error.data?.error || error.message, market: getMarketStatus() }));
-    return;
-  }
-
-  if (urlPath === '/api/wallet/test') {
-    if (req.method !== 'GET') return sendJson(res, 405, { ok: false, error: 'Use GET for wallet test.' });
-    walletForRequest(req)
-      .then(async (identity) => {
-        const wallet = await getWallet(identity.playerId, identity.playerName);
-        let databaseWriteOk = !PERSISTENCE_ENABLED;
-        let databaseError = null;
-        if (PERSISTENCE_ENABLED) {
-          try {
-            const collection = await getWalletCollection();
-            await collection.updateOne(
-              { playerId: wallet.playerId },
-              { $set: { walletTestedAt: new Date().toISOString() } },
-              { upsert: true }
-            );
-            databaseWriteOk = true;
-          } catch (error) {
-            databaseError = error.message;
-          }
-        }
-        return { identity, wallet, databaseWriteOk, databaseError };
-      })
-      .then(({ identity, wallet, databaseWriteOk, databaseError }) => sendJson(res, 200, {
-        ok: databaseWriteOk,
-        user: identity.user,
-        playerId: identity.playerId,
-        persistence: PERSISTENCE_ENABLED ? 'mongodb-uri' : 'memory',
-        walletDatabase: PERSISTENCE_ENABLED ? DATABASE : null,
-        walletCollection: WALLET_COLLECTION,
-        databaseWriteOk,
-        databaseError,
-        wallet: publicWallet(wallet, bestKnownStockPrice()),
-        market: getMarketStatus(),
-        message: databaseWriteOk
-          ? 'Wallet can load and save.'
-          : 'Wallet loaded, but MongoDB write failed. Check MONGODB_URI and database permissions.'
-      }))
-      .catch((error) => sendJson(res, error.statusCode || 400, { ok: false, error: error.data?.error || error.message }));
-    return;
-  }
-
-  if (urlPath === '/api/trade') {
-    if (req.method !== 'POST') return sendJson(res, 405, { ok: false, error: 'Use POST for trading.' });
-    Promise.all([walletForRequest(req), readJsonBody(req)])
-      .then(([identity, body]) => tradeStock({
-        playerId: identity.playerId,
-        playerName: identity.playerName,
-        type: body.type,
-        quantity: body.quantity
-      }).then((result) => ({ identity, result })))
-      .then(({ identity, result }) => sendJson(res, 200, {
-        ok: true,
-        user: identity.user,
-        wallet: publicWallet(result.wallet, result.price),
-        trade: result.trade,
-        market: getMarketStatus(),
-        fictional: true
-      }))
-      .catch((error) => sendJson(res, error.statusCode || 400, { ok: false, error: error.data?.error || error.message, market: error.marketStatus || getMarketStatus() }));
-    return;
-  }
-
-  if (urlPath === '/api/trade/test') {
-    if (req.method !== 'GET') return sendJson(res, 405, { ok: false, error: 'Use GET for trade test.' });
-    walletForRequest(req)
-      .then(async (identity) => {
-        const wallet = await getWallet(identity.playerId, identity.playerName);
-        const price = await getCurrentStockPrice({ force: false });
-        return { identity, wallet, price };
-      })
-      .then(({ identity, wallet, price }) => sendJson(res, 200, {
-        ok: true,
-        user: identity.user,
-        playerId: identity.playerId,
-        price,
-        wallet: publicWallet(wallet, price),
-        canTradeNow: getMarketStatus().open,
-        market: getMarketStatus(),
-        canBuyOneShare: (Number(wallet.balance) || 0) >= price,
-        persistence: PERSISTENCE_ENABLED ? 'mongodb-uri' : 'memory',
-        walletDatabase: PERSISTENCE_ENABLED ? DATABASE : null,
-        walletCollection: WALLET_COLLECTION,
-        message: 'Trade route can read your wallet and find a usable stock price without waiting for normal TSN.'
-      }))
-      .catch((error) => sendJson(res, error.statusCode || 400, { ok: false, error: error.data?.error || error.message }));
-    return;
+  if (urlPath === '/api/trade' || urlPath === '/api/trade/test') {
+    return disabledCommerceResponse(res);
   }
 
   if (urlPath === '/api/history') {
@@ -2057,7 +1679,8 @@ const server = http.createServer((req, res) => {
     const queryLimit = sinceMs
       ? Math.min(Math.max(estimatedRangePoints, limit * 5, 5000), MAX_HISTORY_POINTS)
       : Math.min(Math.max(MAX_HISTORY_POINTS, limit * 10), MAX_HISTORY_POINTS);
-    loadHistory({ sinceMs: sinceMs || 0, limit: queryLimit })
+    getTsnSession(req)
+      .then(() => loadHistory({ sinceMs: sinceMs || 0, limit: queryLimit }))
       .then((history) => {
         const points = downsampleHistory(history, limit);
         sendJson(res, 200, {
@@ -2077,7 +1700,7 @@ const server = http.createServer((req, res) => {
           }))
         });
       })
-      .catch((error) => sendJson(res, 500, { ok: false, error: error.message }));
+      .catch((error) => sendJson(res, error.statusCode || 500, { ok: false, error: error.message, accessDenied: Boolean(error.accessDenied) }));
     return;
   }
 
@@ -2093,7 +1716,7 @@ const server = http.createServer((req, res) => {
     }
     resetStockHistory()
       .then((payload) => sendJson(res, 200, { ...payload, reset: true }))
-      .catch((error) => sendJson(res, 500, { ok: false, error: error.message }));
+      .catch((error) => sendJson(res, error.statusCode || 500, { ok: false, error: error.message, accessDenied: Boolean(error.accessDenied) }));
     return;
   }
 
@@ -2108,7 +1731,10 @@ const server = http.createServer((req, res) => {
         resetRequiresKey: Boolean(RESET_KEY),
         targetBasePrice: TARGET_BASE_PRICE,
         autoRebaseEnabled: AUTO_REBASE_ENABLED,
-        tsnmEarnPerMinute: TSNM_EARN_PER_MINUTE,
+        loginRequired: true,
+        allowedUsername: TSN_STOCK_ALLOWED_USERNAME,
+        walletEnabled: false,
+        tradingEnabled: false,
         historyApiMaxPoints: HISTORY_API_MAX_POINTS,
         storedHistoryPoints: MAX_HISTORY_POINTS,
         stockPayloadHistoryPoints: STOCK_PAYLOAD_HISTORY_POINTS,
