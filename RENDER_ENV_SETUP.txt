@@ -20,7 +20,7 @@ TSN_ORIGINAL_MONGODB_STATE_COLLECTION=app_state
 TSN_ORIGINAL_MONGODB_STATE_ID=main
 TSN_STOCK_SESSION_SECRET=make-this-a-long-random-secret
 NODE_ENV=production
-NODE_VERSION=22.16.0
+NODE_VERSION=20.12.2
 NPM_CONFIG_AUDIT=false
 NPM_CONFIG_FUND=false
 
@@ -28,3 +28,11 @@ Optional:
 PORT=3010
 TSN_STOCK_MAX_HISTORY=302400
 TSN_STOCK_REFRESH_MS=2000
+
+
+TSN connection check:
+- TSN_API_BASE_URL must be your NORMAL TSN root URL, not TSN-S.
+- Example: https://your-normal-tsn.onrender.com
+- Do not add /api at the end.
+- Optional: TSN_API_CONNECT_TIMEOUT_MS=30000 and TSN_API_RETRY_COUNT=2.
+- Open /api/source-test on TSN-S after deploy.

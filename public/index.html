@@ -148,9 +148,12 @@
 
     <section id="setupHelp" class="setup-help card hidden">
       <h2>Mangler forbindelse til TSN</h2>
-      <p>Sæt miljøvariablen <code>TSN_API_BASE_URL</code> på TSN Stock Render-servicen til URL’en på din originale TSN hjemmeside.</p>
+      <p>Sæt miljøvariablen <code>TSN_API_BASE_URL</code> på TSN-S Render-servicen til URL’en på din normale TSN hjemmeside.</p>
       <p>Eksempel: <code>https://din-tsn.onrender.com</code></p>
-      <p>For permanent grafhistorik skal MONGODB_URI sættes på Render.</p>
+      <p>Brug ikke TSN-S URL’en her, og skriv ikke <code>/api</code> til sidst.</p>
+      <p>For permanent grafhistorik og TSNM-wallets skal <code>MONGODB_URI</code> sættes på TSN-S.</p>
+      <button id="sourceTestButton" class="ghost-button" type="button">Test TSN-forbindelse</button>
+      <pre id="sourceTestOutput" class="setup-output"></pre>
     </section>
   </main>
 

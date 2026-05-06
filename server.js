@@ -21,15 +21,43 @@ try {
 }
 const crypto = require('crypto');
 
+function firstEnvValue(names) {
+  for (const name of names) {
+    const value = String(process.env[name] || '').trim();
+    if (value) return { name, value };
+  }
+  return { name: '', value: '' };
+}
+
+function normalizeBaseUrl(value) {
+  let url = String(value || '').trim();
+  if (!url) return '';
+  if (!/^https?:\/\//i.test(url)) {
+    url = /^(localhost|127\.0\.0\.1)(:|\/|$)/i.test(url) ? `http://${url}` : `https://${url}`;
+  }
+  url = url.replace(/\/+$/, '');
+  // Users often paste https://their-tsn.onrender.com/api. TSN-S needs the site root.
+  url = url.replace(/\/api$/i, '');
+  return url;
+}
+
+function joinApiUrl(baseUrl, endpoint) {
+  return `${String(baseUrl || '').replace(/\/+$/, '')}/${String(endpoint || '').replace(/^\/+/, '')}`;
+}
+
 const PORT = Number(process.env.PORT || 3010);
-const TSN_API_BASE_URL = String(process.env.TSN_API_BASE_URL || '').replace(/\/$/, '');
+const TSN_API_ENV = firstEnvValue(['TSN_API_BASE_URL', 'TSN_BASE_URL', 'ORIGINAL_TSN_URL', 'TSN_URL', 'PUBLIC_TSN_URL']);
+const TSN_API_BASE_URL = normalizeBaseUrl(TSN_API_ENV.value);
+const TSN_API_CONNECT_TIMEOUT_MS = Number(process.env.TSN_API_CONNECT_TIMEOUT_MS || 30000);
+const TSN_API_RETRY_COUNT = Number(process.env.TSN_API_RETRY_COUNT || 2);
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
 // Optional MongoDB Atlas persistence using the normal MongoDB connection string.
 // This is the same setup style as the original TSN app: MONGODB_URI.
 const MONGODB_URI = String(process.env.MONGODB_URI || '');
 const DATABASE = String(process.env.MONGODB_DATABASE || 'tsn_stock');
-const ORIGINAL_TSN_MONGODB_URI = String(process.env.TSN_ORIGINAL_MONGODB_URI || process.env.ORIGINAL_TSN_MONGODB_URI || MONGODB_URI || '');
+const EXPLICIT_ORIGINAL_TSN_MONGODB_URI = String(process.env.TSN_ORIGINAL_MONGODB_URI || process.env.ORIGINAL_TSN_MONGODB_URI || '').trim();
+const ORIGINAL_TSN_MONGODB_URI = EXPLICIT_ORIGINAL_TSN_MONGODB_URI;
 const ORIGINAL_TSN_DATABASE = String(process.env.TSN_ORIGINAL_MONGODB_DATABASE || process.env.MONGODB_TSN_DATABASE || 'tsn');
 const ORIGINAL_TSN_STATE_COLLECTION = String(process.env.TSN_ORIGINAL_MONGODB_STATE_COLLECTION || 'app_state');
 const ORIGINAL_TSN_STATE_ID = String(process.env.TSN_ORIGINAL_MONGODB_STATE_ID || 'main');
@@ -98,10 +126,26 @@ function sendJson(res, statusCode, payload) {
 }
 
 function safeStaticPath(urlPath) {
-  const cleanPath = decodeURIComponent(urlPath.split('?')[0]).replace(/^\/+/, '') || 'index.html';
+  let cleanPath = 'index.html';
+  try {
+    cleanPath = decodeURIComponent(String(urlPath || '/').split('?')[0]).replace(/^\/+/, '') || 'index.html';
+  } catch {
+    return null;
+  }
   const resolved = path.resolve(PUBLIC_DIR, cleanPath);
   if (!resolved.startsWith(PUBLIC_DIR)) return null;
   return resolved;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRetryableFetchError(error) {
+  const status = Number(error?.statusCode || 0);
+  return error?.name === 'AbortError'
+    || /aborted|timeout|terminated|fetch failed|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN/i.test(String(error?.message || ''))
+    || [408, 425, 429, 500, 502, 503, 504].includes(status);
 }
 
 async function fetchJsonWithTimeout(url, options = {}, timeoutMs = 12000) {
@@ -113,15 +157,31 @@ async function fetchJsonWithTimeout(url, options = {}, timeoutMs = 12000) {
     let data = null;
     try { data = text ? JSON.parse(text) : null; } catch { data = { raw: text }; }
     if (!response.ok) {
-      const error = new Error(`HTTP ${response.status} from ${url}`);
+      const message = data?.error || data?.message || `HTTP ${response.status} from ${url}`;
+      const error = new Error(message);
       error.statusCode = response.status;
       error.data = data;
+      error.url = url;
       throw error;
     }
     return data;
   } finally {
     clearTimeout(timeout);
   }
+}
+
+async function fetchJsonWithRetry(url, options = {}, timeoutMs = TSN_API_CONNECT_TIMEOUT_MS, retries = TSN_API_RETRY_COUNT) {
+  let lastError = null;
+  for (let attempt = 0; attempt <= Math.max(0, retries); attempt += 1) {
+    try {
+      return await fetchJsonWithTimeout(url, options, timeoutMs);
+    } catch (error) {
+      lastError = error;
+      if (attempt >= retries || !isRetryableFetchError(error)) break;
+      await sleep(Math.min(5000, 1000 + attempt * 2000));
+    }
+  }
+  throw lastError;
 }
 
 
@@ -307,28 +367,29 @@ function publicTsnUser(user) {
 
 async function proxyTsnLogin(username, password) {
   const directErrors = [];
-  if (ORIGINAL_TSN_MONGODB_URI && bcrypt && jwt && MongoClient) {
+  if (EXPLICIT_ORIGINAL_TSN_MONGODB_URI && ORIGINAL_TSN_MONGODB_URI && bcrypt && jwt && MongoClient) {
     try {
       return await directOriginalTsnLogin(username, password);
     } catch (error) {
       directErrors.push(error.data?.error || error.message || 'Direct MongoDB login failed.');
-      // If the credentials were checked and rejected, do not fall back to API login.
-      if ([400, 401, 403].includes(Number(error.statusCode))) throw error;
+      // A banned account should stay blocked. Wrong DB/key/password can still be rescued by the TSN API fallback.
+      if (Number(error.statusCode) === 403) throw error;
     }
   }
 
   if (!TSN_API_BASE_URL) {
-    const error = new Error(`TSN-S could not log in. Direct MongoDB login failed: ${directErrors.join(' | ') || 'not configured'}. TSN_API_BASE_URL is also missing.`);
+    const configuredHint = TSN_API_ENV.name ? ` ${TSN_API_ENV.name} was set, but it could not be normalized.` : '';
+    const error = new Error(`TSN-S could not log in. Direct MongoDB login failed: ${directErrors.join(' | ') || 'not configured'}. TSN_API_BASE_URL is missing.${configuredHint}`);
     error.statusCode = 500;
     throw error;
   }
 
   try {
-    const data = await fetchJsonWithTimeout(`${TSN_API_BASE_URL}/api/auth/login`, {
+    const data = await fetchJsonWithRetry(joinApiUrl(TSN_API_BASE_URL, '/api/auth/login'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, login: username, password })
-    }, 12000);
+    }, TSN_API_CONNECT_TIMEOUT_MS);
     if (!data?.token || !data?.user) {
       const error = new Error('Original TSN login did not return token/user. Deploy the newest normal TSN version or enable direct MongoDB login.');
       error.statusCode = 502;
@@ -359,9 +420,9 @@ async function getTsnSession(req) {
 
   // Backward compatibility for older TSN-S tokens that were original TSN JWTs.
   if (TSN_API_BASE_URL) {
-    const data = await fetchJsonWithTimeout(`${TSN_API_BASE_URL}/api/me`, {
+    const data = await fetchJsonWithRetry(joinApiUrl(TSN_API_BASE_URL, '/api/me'), {
       headers: { Authorization: `Bearer ${token}` }
-    }, 12000);
+    }, TSN_API_CONNECT_TIMEOUT_MS);
     if (data?.user) return { token, user: publicTsnUser(data.user) };
   }
 
@@ -1171,31 +1232,50 @@ function resetAllowed(req, url) {
   return !RESET_KEY || requestResetKey(req, url) === RESET_KEY;
 }
 
+async function fetchOriginalStockFromApi() {
+  if (!TSN_API_BASE_URL) throw new Error('TSN_API_BASE_URL is missing');
+  const endpoints = ['/api/public/stock'];
+  const errors = [];
+  for (const endpoint of endpoints) {
+    const fullUrl = joinApiUrl(TSN_API_BASE_URL, endpoint);
+    try {
+      const data = await fetchJsonWithRetry(fullUrl, { cache: 'no-store' }, TSN_API_CONNECT_TIMEOUT_MS);
+      return { ...normalizeSourceStock(data), connectionSource: 'original-tsn-api', connectionEndpoint: endpoint };
+    } catch (error) {
+      errors.push(`${endpoint}: ${error.message}`);
+    }
+  }
+  const error = new Error(`TSN API failed at ${TSN_API_BASE_URL}: ${errors.join(' | ')}`);
+  error.statusCode = 502;
+  error.connectionErrors = errors;
+  throw error;
+}
+
 async function fetchOriginalStock() {
   const errors = [];
 
   if (TSN_API_BASE_URL) {
     try {
-      const data = await fetchJsonWithTimeout(`${TSN_API_BASE_URL}/api/public/stock`, { cache: 'no-store' }, 12000);
-      return { ...normalizeSourceStock(data), connectionSource: 'original-tsn-api' };
+      return await fetchOriginalStockFromApi();
     } catch (error) {
-      errors.push(`API ${TSN_API_BASE_URL}/api/public/stock failed: ${error.message}`);
+      errors.push(error.message);
     }
   } else {
     errors.push('TSN_API_BASE_URL is missing');
   }
 
-  if (ORIGINAL_TSN_MONGODB_URI && MongoClient) {
+  if (EXPLICIT_ORIGINAL_TSN_MONGODB_URI && ORIGINAL_TSN_MONGODB_URI && MongoClient) {
     try {
       return { ...normalizeSourceStock(await fetchOriginalStockFromMongo()), connectionSource: 'original-tsn-mongodb' };
     } catch (error) {
       errors.push(`MongoDB fallback failed: ${error.message}`);
     }
   } else {
-    errors.push('TSN_ORIGINAL_MONGODB_URI fallback is not configured');
+    errors.push('TSN_ORIGINAL_MONGODB_URI fallback is not configured. This is optional if TSN_API_BASE_URL works.');
   }
 
-  const error = new Error(`Could not connect to original TSN. ${errors.join(' | ')}`);
+  const hint = 'Check that TSN_API_BASE_URL points to the normal TSN root URL, for example https://your-tsn.onrender.com, not the TSN-S URL and not a URL ending in /api.';
+  const error = new Error(`Could not connect to original TSN. ${errors.join(' | ')} ${hint}`);
   error.statusCode = 502;
   error.connectionErrors = errors;
   throw error;
@@ -1305,7 +1385,12 @@ const server = http.createServer((req, res) => {
       persistence: PERSISTENCE_ENABLED ? 'mongodb-uri' : 'memory',
       tsnMoney: { earnPerMinute: TSNM_EARN_PER_MINUTE, walletCollection: WALLET_COLLECTION, tradeCollection: TRADE_COLLECTION },
       tsnApiConfigured: Boolean(TSN_API_BASE_URL),
-      originalTsnMongoLogin: Boolean(ORIGINAL_TSN_MONGODB_URI && MongoClient && bcrypt && jwt),
+      tsnApiEnvName: TSN_API_ENV.name || null,
+      tsnApiBaseUrl: TSN_API_BASE_URL || null,
+      tsnApiTimeoutMs: TSN_API_CONNECT_TIMEOUT_MS,
+      tsnApiRetries: TSN_API_RETRY_COUNT,
+      originalTsnMongoLogin: Boolean(EXPLICIT_ORIGINAL_TSN_MONGODB_URI && ORIGINAL_TSN_MONGODB_URI && MongoClient && bcrypt && jwt),
+      originalTsnMongoFallbackExplicit: Boolean(EXPLICIT_ORIGINAL_TSN_MONGODB_URI),
       originalTsnDatabase: ORIGINAL_TSN_DATABASE
     });
   }
@@ -1335,27 +1420,33 @@ const server = http.createServer((req, res) => {
   if (urlPath === '/api/source-test') {
     Promise.allSettled([
       TSN_API_BASE_URL
-        ? fetchJsonWithTimeout(`${TSN_API_BASE_URL}/api/public/stock`, { cache: 'no-store' }, 12000)
+        ? fetchOriginalStockFromApi()
         : Promise.reject(new Error('TSN_API_BASE_URL is missing')),
-      ORIGINAL_TSN_MONGODB_URI && MongoClient
+      EXPLICIT_ORIGINAL_TSN_MONGODB_URI && ORIGINAL_TSN_MONGODB_URI && MongoClient
         ? fetchOriginalStockFromMongo()
-        : Promise.reject(new Error('TSN_ORIGINAL_MONGODB_URI fallback is not configured'))
+        : Promise.reject(new Error('TSN_ORIGINAL_MONGODB_URI fallback is not configured. Optional if the API test works.'))
     ]).then(([apiResult, mongoResult]) => sendJson(res, 200, {
       ok: apiResult.status === 'fulfilled' || mongoResult.status === 'fulfilled',
       api: {
         configured: Boolean(TSN_API_BASE_URL),
-        url: TSN_API_BASE_URL ? `${TSN_API_BASE_URL}/api/public/stock` : null,
+        envName: TSN_API_ENV.name || null,
+        baseUrl: TSN_API_BASE_URL || null,
+        url: TSN_API_BASE_URL ? joinApiUrl(TSN_API_BASE_URL, '/api/public/stock') : null,
+        timeoutMs: TSN_API_CONNECT_TIMEOUT_MS,
+        retries: TSN_API_RETRY_COUNT,
         ok: apiResult.status === 'fulfilled',
-        error: apiResult.status === 'rejected' ? apiResult.reason.message : null
+        error: apiResult.status === 'rejected' ? apiResult.reason.message : null,
+        metrics: apiResult.status === 'fulfilled' ? apiResult.value.metrics : null
       },
       mongodbFallback: {
-        configured: Boolean(ORIGINAL_TSN_MONGODB_URI),
+        configured: Boolean(EXPLICIT_ORIGINAL_TSN_MONGODB_URI),
         database: ORIGINAL_TSN_DATABASE,
         collection: ORIGINAL_TSN_STATE_COLLECTION,
         ok: mongoResult.status === 'fulfilled',
         error: mongoResult.status === 'rejected' ? mongoResult.reason.message : null,
         metrics: mongoResult.status === 'fulfilled' ? mongoResult.value.metrics : null
-      }
+      },
+      setupHint: 'TSN_API_BASE_URL must be the normal TSN site root, for example https://your-tsn.onrender.com. Do not use the TSN-S URL.'
     })).catch((error) => sendJson(res, 500, { ok: false, error: error.message }));
     return;
   }
@@ -1366,7 +1457,8 @@ const server = http.createServer((req, res) => {
       .catch((error) => sendJson(res, error.statusCode || 500, {
         ok: false,
         error: error.message,
-        needs: !TSN_API_BASE_URL && !ORIGINAL_TSN_MONGODB_URI ? ['TSN_API_BASE_URL or TSN_ORIGINAL_MONGODB_URI'] : []
+        needs: !TSN_API_BASE_URL && !EXPLICIT_ORIGINAL_TSN_MONGODB_URI ? ['TSN_API_BASE_URL or TSN_ORIGINAL_MONGODB_URI'] : [],
+        sourceTestUrl: '/api/source-test'
       }));
     return;
   }
@@ -1515,6 +1607,8 @@ server.listen(PORT, () => {
   console.log(`Persistence: ${PERSISTENCE_ENABLED ? `MongoDB URI (${DATABASE}.${COLLECTION})` : 'memory only'}`);
   if (!TSN_API_BASE_URL) {
     console.warn('Missing TSN_API_BASE_URL. Set it to your original TSN website URL, for example https://your-tsn.onrender.com');
+  } else {
+    console.log(`Original TSN API: ${TSN_API_BASE_URL} (${TSN_API_ENV.name || 'env'})`);
   }
   if (!PERSISTENCE_ENABLED) {
     console.warn('MongoDB persistence is not configured. Set MONGODB_URI, plus optional MONGODB_DATABASE and MONGODB_COLLECTION.');

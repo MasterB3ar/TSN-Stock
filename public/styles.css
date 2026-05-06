@@ -425,3 +425,27 @@ code { background: rgba(255,255,255,.08); border: 1px solid var(--border); borde
   .range-buttons { width: 100%; overflow-x: auto; flex-wrap: nowrap; padding-bottom: 4px; }
   .range-button { white-space: nowrap; }
 }
+
+.setup-help .ghost-button {
+  border: 1px solid var(--border);
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.07);
+  border-radius: 14px;
+  padding: 10px 14px;
+  margin-top: 8px;
+}
+
+.setup-help .ghost-button:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.setup-output {
+  white-space: pre-wrap;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 12px;
+  min-height: 44px;
+  color: var(--muted);
+  background: rgba(0, 0, 0, 0.22);
+}

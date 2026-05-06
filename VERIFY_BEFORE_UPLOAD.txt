@@ -11,3 +11,11 @@ Render settings:
 Build Command: npm install --omit=dev --no-audit --no-fund
 Start Command: npm start
 Root Directory: leave empty if these files are in the repo root.
+
+
+TSN connection check:
+- TSN_API_BASE_URL must be your NORMAL TSN root URL, not TSN-S.
+- Example: https://your-normal-tsn.onrender.com
+- Do not add /api at the end.
+- Optional: TSN_API_CONNECT_TIMEOUT_MS=30000 and TSN_API_RETRY_COUNT=2.
+- Open /api/source-test on TSN-S after deploy.

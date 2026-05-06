@@ -26,5 +26,9 @@ services:
         value: "300000"
       - key: TSN_STOCK_REFRESH_MS
         value: "2000"
+      - key: TSN_API_CONNECT_TIMEOUT_MS
+        value: "30000"
+      - key: TSN_API_RETRY_COUNT
+        value: "2"
       - key: TSN_STOCK_MAX_HISTORY
         value: "302400"

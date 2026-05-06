@@ -69,7 +69,7 @@ async function loginWithTsn(event) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ username, password }),
     cache: 'no-store'
-  }, 12000);
+  }, 35000);
   const data = await response.json().catch(() => ({}));
   if (!response.ok || !data.ok) throw new Error(data.error || 'Login fejlede.');
   state.token = data.token;
@@ -608,13 +608,14 @@ async function fetchStock({ manual = false } = {}) {
 
   try {
     const url = '/api/stock?force=1';
-    const response = await fetchWithTimeout(url, { cache: 'no-store' }, 12000);
+    const response = await fetchWithTimeout(url, { cache: 'no-store' }, 35000);
     const data = await response.json().catch(() => ({}));
     if (!response.ok || !data.ok) {
-      if (Array.isArray(data.needs) && data.needs.includes('TSN_API_BASE_URL')) {
+      if (Array.isArray(data.needs) && data.needs.some((item) => String(item).includes('TSN_API_BASE_URL'))) {
         $('#setupHelp')?.classList.remove('hidden');
       }
-      throw new Error(data.error || `TSN Stock API svarede ${response.status}`);
+      const testLink = data.sourceTestUrl ? ` Test forbindelsen på ${data.sourceTestUrl}.` : '';
+      throw new Error((data.error || `TSN Stock API svarede ${response.status}`) + testLink);
     }
     renderStock(data.stock);
     fetchChartHistory({ force: manual }).catch((error) => console.error(error));
@@ -627,6 +628,30 @@ async function fetchStock({ manual = false } = {}) {
   }
 }
 
+
+
+async function testTsnSourceConnection() {
+  const output = $('#sourceTestOutput');
+  if (output) output.textContent = 'Tester forbindelse til normal TSN...';
+  try {
+    const response = await fetchWithTimeout('/api/source-test', { cache: 'no-store' }, 40000);
+    const data = await response.json().catch(() => ({}));
+    if (output) {
+      const apiLine = data.api?.ok
+        ? `API OK: ${data.api.url}`
+        : `API fejl: ${data.api?.error || 'ikke konfigureret'}`;
+      const mongoLine = data.mongodbFallback?.ok
+        ? `Mongo fallback OK: ${data.mongodbFallback.database}.${data.mongodbFallback.collection}`
+        : `Mongo fallback: ${data.mongodbFallback?.error || 'ikke konfigureret'}`;
+      output.textContent = `${data.ok ? 'Forbindelse fundet.' : 'Ingen forbindelse endnu.'}
+${apiLine}
+${mongoLine}
+${data.setupHint || ''}`;
+    }
+  } catch (error) {
+    if (output) output.textContent = `Source-test fejlede: ${error.message}`;
+  }
+}
 
 async function resetStock() {
   const sure = window.confirm('Vil du nulstille TSN Stock? Dette sletter den gemte grafhistorik og starter prisen fra reset-niveauet igen.');

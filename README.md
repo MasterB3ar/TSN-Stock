@@ -8,6 +8,32 @@ This version uses the normal MongoDB Atlas connection string:
 MONGODB_URI=mongodb+srv://...
 ```
 
+## TSN connection fix in v1.1.5
+
+This version is more tolerant when connecting to the normal TSN service:
+
+- `TSN_API_BASE_URL` is normalized automatically if you accidentally add a trailing slash or `/api`.
+- Extra aliases are accepted: `TSN_BASE_URL`, `ORIGINAL_TSN_URL`, `TSN_URL`, and `PUBLIC_TSN_URL`.
+- API calls now use a longer timeout and retry, which helps when the normal TSN Render service is asleep and needs to wake up.
+- TSN-S no longer accidentally treats its own `MONGODB_URI`/`tsn_stock` database as the normal TSN database. Direct MongoDB fallback only activates when `TSN_ORIGINAL_MONGODB_URI` is explicitly set.
+- Visit `/api/source-test` on TSN-S to see exactly whether the API or MongoDB fallback is connecting.
+
+Correct setup:
+
+```txt
+TSN_API_BASE_URL=https://your-normal-tsn.onrender.com
+TSN_API_CONNECT_TIMEOUT_MS=30000
+TSN_API_RETRY_COUNT=2
+```
+
+Wrong setup examples:
+
+```txt
+TSN_API_BASE_URL=https://your-tsn-s.onrender.com
+TSN_API_BASE_URL=https://your-normal-tsn.onrender.com/api
+```
+
+
 ## What is included
 
 - Saves TSN Stock price snapshots whenever metrics change, checked about every 2 seconds.
@@ -20,7 +46,7 @@ MONGODB_URI=mongodb+srv://...
 - Keeps `/healthz` for uptime checks.
 - Adds a **Reset** button that clears stock history and starts the price from the reset baseline again.
 - Adds **original TSN account login/logout** inside TSN-S.
-- TSN-S verifies sessions through the original TSN `/api/auth/login` and `/api/me` endpoints.
+- TSN-S verifies sessions through the original TSN `/api/auth/login` and `/api/me` endpoints. API calls use retry/longer timeout so sleeping Render services have time to wake up.
 - Adds **TSNM wallets** persisted in MongoDB and tied to the original TSN user id.
 - Users earn **10 TSNM per online minute** while logged in and the TSN Stock page is open.
 - Users can buy and sell fictional TSN Stock with TSNM.
@@ -80,7 +106,7 @@ Logout only removes the TSN-S browser session. It does not delete the original T
 Use these settings for the TSN Stock Render service:
 
 ```txt
-Build Command: npm install --omit=dev --no-audit --no-fund
+Build Command: bash ./render-build.sh
 Start Command: npm start
 ```
 
@@ -88,6 +114,8 @@ Required environment variables:
 
 ```txt
 TSN_API_BASE_URL=https://your-normal-tsn.onrender.com
+TSN_API_CONNECT_TIMEOUT_MS=30000
+TSN_API_RETRY_COUNT=2
 MONGODB_URI=mongodb+srv://USERNAME:PASSWORD@cluster0.xxxxx.mongodb.net/tsn_stock?retryWrites=true&w=majority
 NODE_ENV=production
 NODE_VERSION=20.12.2
@@ -113,7 +141,7 @@ MONGODB_WALLET_COLLECTION=tsnMoneyWallets
 MONGODB_TRADE_COLLECTION=tsnMoneyTrades
 ```
 
-`TSN_STOCK_MAX_HISTORY=302400` means about 24 minutes of 2-second snapshots if activity constantly changes. Increase it if you want a longer chart, for example `TSN_STOCK_MAX_HISTORY=10800` for about 6 hours.
+`TSN_STOCK_MAX_HISTORY=302400` means about 7 days of 2-second snapshots if activity constantly changes. For about 6 hours, use `TSN_STOCK_MAX_HISTORY=10800`.
 
 `TSN_STOCK_TARGET_BASE_PRICE=100` keeps the stock centered around 100. If your old MongoDB history is already around 500, `TSN_STOCK_AUTO_REBASE=true` automatically scales the saved history down the first time the app runs after deployment.
 
