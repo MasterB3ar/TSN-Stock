@@ -1,0 +1,41 @@
+TSN-S Render ETIMEDOUT / wrong npm registry fix
+==============================================
+
+The error:
+  npm ERR! code ETIMEDOUT
+  request to https://an internal/private npm registry URL ending in whatwg-url-14.2.0.tgz failed
+
+This means npm is trying to download a dependency from a bad/internal registry URL.
+It is usually caused by an old package-lock.json that contains internal resolved URLs.
+
+This version fixes it by:
+  1. Adding .npmrc with registry=https://registry.npmjs.org/
+  2. Setting package-lock=false so npm ignores old lockfiles
+  3. Adding render-build.sh, which deletes old lockfiles before install
+  4. Updating render.yaml to use bash ./render-build.sh
+
+Render settings to use:
+
+Build Command:
+  bash ./render-build.sh
+
+Start Command:
+  node server.js
+
+Environment variables:
+  NODE_VERSION=20.12.2
+  NODE_ENV=production
+  NPM_CONFIG_REGISTRY=https://registry.npmjs.org/
+  NPM_CONFIG_PACKAGE_LOCK=false
+  NPM_CONFIG_AUDIT=false
+  NPM_CONFIG_FUND=false
+  NPM_CONFIG_PROGRESS=false
+
+Important GitHub step:
+  If your repo still has package-lock.json, delete it from GitHub before redeploying.
+  Or use this version's Build Command exactly, because it deletes package-lock.json during Render build.
+
+On Render deploy with:
+  Manual Deploy -> Clear build cache & deploy
+
+Do not use npm ci for this project on Render. Use npm install through render-build.sh.

@@ -90,7 +90,7 @@ Required environment variables:
 TSN_API_BASE_URL=https://your-normal-tsn.onrender.com
 MONGODB_URI=mongodb+srv://USERNAME:PASSWORD@cluster0.xxxxx.mongodb.net/tsn_stock?retryWrites=true&w=majority
 NODE_ENV=production
-NODE_VERSION=22.16.0
+NODE_VERSION=20.12.2
 NPM_CONFIG_AUDIT=false
 NPM_CONFIG_FUND=false
 ```
@@ -317,7 +317,7 @@ TSN_ORIGINAL_MONGODB_DATABASE=tsn
 TSN_ORIGINAL_MONGODB_STATE_COLLECTION=app_state
 TSN_STOCK_SESSION_SECRET=make-this-a-long-random-secret
 TSN_DATA_ENCRYPTION_KEY=same-key-as-original-tsn
-NODE_VERSION=22.16.0
+NODE_VERSION=20.12.2
 NODE_ENV=production
 ```
 
@@ -345,7 +345,7 @@ TSN_ORIGINAL_MONGODB_STATE_ID=main
 TSN_STOCK_SESSION_SECRET=make-this-a-long-random-secret
 TSN_DATA_ENCRYPTION_KEY=same-key-as-original-tsn-if-your-tsn-uses-encrypted-usernames
 NODE_ENV=production
-NODE_VERSION=22.16.0
+NODE_VERSION=20.12.2
 NPM_CONFIG_AUDIT=false
 NPM_CONFIG_FUND=false
 ```
@@ -377,3 +377,31 @@ NODE_VERSION=20.12.2
 ```
 
 Then use **Manual Deploy → Clear build cache & deploy**.
+
+
+## Render ETIMEDOUT fix
+
+If Render fails with a URL like `an internal/private npm registry URL ending in whatwg-url-14.2.0.tgz`, npm is using a bad/internal package URL from an old lockfile.
+
+Use these Render settings:
+
+```txt
+Build Command: bash ./render-build.sh
+Start Command: node server.js
+```
+
+Also add these Render environment variables:
+
+```txt
+NODE_VERSION=20.12.2
+NODE_ENV=production
+NPM_CONFIG_REGISTRY=https://registry.npmjs.org/
+NPM_CONFIG_PACKAGE_LOCK=false
+NPM_CONFIG_AUDIT=false
+NPM_CONFIG_FUND=false
+NPM_CONFIG_PROGRESS=false
+```
+
+Then deploy with **Manual Deploy → Clear build cache & deploy**.
+
+Do not use `npm ci` for this package on Render. `npm ci` requires a lockfile and can reuse broken/internal package URLs.

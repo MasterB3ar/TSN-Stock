@@ -3,19 +3,27 @@ services:
     name: tsn-stock
     env: node
     plan: free
-    buildCommand: npm cache clean --force && npm install --omit=dev --no-audit --no-fund --prefer-online
+    buildCommand: bash ./render-build.sh
     startCommand: node server.js
     envVars:
       - key: NODE_VERSION
         value: 20.12.2
       - key: NODE_ENV
         value: production
+      - key: NPM_CONFIG_REGISTRY
+        value: https://registry.npmjs.org/
+      - key: NPM_CONFIG_PACKAGE_LOCK
+        value: "false"
       - key: NPM_CONFIG_AUDIT
         value: "false"
       - key: NPM_CONFIG_FUND
         value: "false"
       - key: NPM_CONFIG_PROGRESS
         value: "false"
+      - key: NPM_CONFIG_FETCH_RETRIES
+        value: "5"
+      - key: NPM_CONFIG_FETCH_TIMEOUT
+        value: "300000"
       - key: TSN_STOCK_REFRESH_MS
         value: "2000"
       - key: TSN_STOCK_MAX_HISTORY

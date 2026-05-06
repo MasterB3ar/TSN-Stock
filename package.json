@@ -1,7 +1,7 @@
 {
   "name": "tsn-stock-standalone",
-  "version": "1.1.3",
-  "description": "Standalone TSN-S / TSN Stock with TSN account login, TSNM trading, MongoDB persistence, chart ranges, and Render npm-crash-safe deployment settings.",
+  "version": "1.1.4",
+  "description": "Standalone TSN-S / TSN Stock with TSN account login, TSNM trading, MongoDB persistence, chart ranges, shared wallet support, and Render ETIMEDOUT-safe npm install settings.",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
