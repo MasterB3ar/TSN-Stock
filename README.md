@@ -111,3 +111,16 @@ Added in this version:
 - New backend endpoint: `/api/report`.
 
 No new environment variables are required.
+
+## v1.2.3 Open-Hours Popularity Trend
+
+Added in this version:
+
+- CEO dashboard now shows an **Open-hours trend** panel.
+- Activity is averaged only during TSN-S open windows: `08:10-09:30`, `09:50-11:15`, and `12:00-13:30` in `Europe/Copenhagen`.
+- Compares the latest open day against previous open days so you can see if TSN is getting more or less popular.
+- Adds 7 / 14 / 30 day trend buttons.
+- Adds `/api/activity-trend?days=7` for CEO-only trend data.
+- Exported CEO reports now include `openHoursActivityTrend`.
+
+No new environment variables are required.

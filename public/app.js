@@ -18,7 +18,11 @@ const state = {
   chartRange: localStorage.getItem('tsnStockChartRange') || '10m',
   chartHistory: [],
   chartHistoryFetchedAt: 0,
-  chartHistoryTimer: null
+  chartHistoryTimer: null,
+  trendDays: Number(localStorage.getItem('tsnStockTrendDays') || 7),
+  activityTrend: null,
+  activityTrendFetchedAt: 0,
+  activityTrendTimer: null
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -118,7 +122,9 @@ async function loginWithTsn(event) {
   await loadDashboardNow();
   startAutoRefresh();
   clearInterval(state.chartHistoryTimer);
+  clearInterval(state.activityTrendTimer);
   state.chartHistoryTimer = setInterval(() => fetchChartHistory().catch((error) => console.error(error)), 20_000);
+  state.activityTrendTimer = setInterval(() => fetchOpenHoursTrend().catch((error) => console.error(error)), 60_000);
 }
 
 function logout() {
@@ -127,6 +133,7 @@ function logout() {
   localStorage.removeItem('tsnStockCeoToken');
   clearInterval(state.timer);
   clearInterval(state.chartHistoryTimer);
+  clearInterval(state.activityTrendTimer);
   hideAccessDenied();
   renderAuth();
   setAuthStatus('Du er logget ud.');
@@ -200,6 +207,18 @@ function formatDateTime(iso) {
     minute: '2-digit',
     second: '2-digit'
   }).format(new Date(iso));
+}
+
+
+function formatDayLabel(dateKey) {
+  if (!dateKey) return '--';
+  const date = new Date(`${dateKey}T12:00:00`);
+  if (Number.isNaN(date.getTime())) return String(dateKey);
+  return new Intl.DateTimeFormat('da-DK', {
+    weekday: 'short',
+    day: '2-digit',
+    month: '2-digit'
+  }).format(date);
 }
 
 function setStatus(text, mode = '') {
@@ -662,6 +681,71 @@ function escapeHtml(value) {
     .replace(/'/g, '&#039;');
 }
 
+
+function updateTrendButtons() {
+  document.querySelectorAll('[data-trend-days]').forEach((button) => {
+    button.classList.toggle('active', Number(button.dataset.trendDays) === Number(state.trendDays));
+  });
+}
+
+function renderOpenHoursTrend(trend) {
+  state.activityTrend = trend;
+  updateTrendButtons();
+  const latest = trend?.latestDay || null;
+  const compare = trend?.latestVsPrevious || {};
+  const direction = compare.direction || 'flat';
+  const directionLabel = direction === 'up' ? 'Stiger' : direction === 'down' ? 'Falder' : 'Stabil';
+  const directionClass = direction === 'up' ? 'up-text' : direction === 'down' ? 'down-text' : 'flat-text';
+
+  const latestEl = $('#trendLatestActivity');
+  if (latestEl) latestEl.textContent = latest ? formatNumber(latest.averageActivityScore, 3) : '--';
+  const previousEl = $('#trendPreviousActivity');
+  if (previousEl) previousEl.textContent = trend?.previousOpenDaysAverage ? formatNumber(trend.previousOpenDaysAverage, 3) : '--';
+  const directionEl = $('#trendDirection');
+  if (directionEl) {
+    directionEl.textContent = directionLabel;
+    directionEl.className = directionClass;
+  }
+  const percentEl = $('#trendPercent');
+  if (percentEl) {
+    const pct = Number(compare.changePercent || 0);
+    percentEl.textContent = latest ? `${pct >= 0 ? '+' : ''}${formatNumber(pct)}% mod tidligere åbne dage` : 'venter på data';
+    percentEl.className = directionClass;
+  }
+  const headline = $('#openHoursTrendHeadline');
+  if (headline) headline.textContent = trend?.headline || 'Der er ikke nok open-hours historik endnu.';
+
+  const rows = $('#openHoursTrendRows');
+  const days = Array.isArray(trend?.days) ? trend.days.slice().reverse() : [];
+  if (!rows) return;
+  if (!days.length) {
+    rows.innerHTML = '<tr><td colspan="6">Ingen åbningshistorik endnu. Lad TSN-S køre i åbningstiden, så den kan samle data.</td></tr>';
+    return;
+  }
+  rows.innerHTML = days.map((day) => `
+    <tr>
+      <td>${escapeHtml(formatDayLabel(day.date))}</td>
+      <td><strong>${formatNumber(day.averageActivityScore, 3)}</strong></td>
+      <td>${formatNumber(day.averageOnlineUsers, 1)}</td>
+      <td>${formatNumber(day.averageMessagesPerHour, 1)}</td>
+      <td>${formatNumber(day.averageGlobalChatsPerHour, 1)}</td>
+      <td>${Number(day.samples || 0).toLocaleString('da-DK')}</td>
+    </tr>
+  `).join('');
+}
+
+async function fetchOpenHoursTrend({ force = false } = {}) {
+  if (!state.token) return;
+  const now = Date.now();
+  if (!force && state.activityTrendFetchedAt && now - state.activityTrendFetchedAt < 60_000) return;
+  const days = Math.max(2, Math.min(30, Number(state.trendDays || 7)));
+  const response = await fetchWithTimeout(`/api/activity-trend?days=${encodeURIComponent(days)}`, { headers: authHeaders(), cache: 'no-store' }, 20000);
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.ok) throw new Error(data.error || 'Kunne ikke hente open-hours trend.');
+  state.activityTrendFetchedAt = now;
+  renderOpenHoursTrend(data);
+}
+
 async function exportCeoReport() {
   if (!state.token) return;
   const button = $('#exportReportButton');
@@ -836,6 +920,7 @@ async function loadDashboardNow() {
     setStatus('Kan ikke forbinde', 'error');
   });
   await fetchChartHistory({ force: true }).catch((error) => console.error(error));
+  await fetchOpenHoursTrend({ force: true }).catch((error) => console.error(error));
 }
 
 function startAutoRefresh() {
@@ -846,6 +931,7 @@ function startAutoRefresh() {
       console.error(error);
       setStatus('Venter på TSN', '');
     });
+    fetchOpenHoursTrend().catch((error) => console.error(error));
   }, REFRESH_INTERVAL_MS);
 }
 
@@ -883,11 +969,13 @@ window.addEventListener('resize', () => {
 
 renderAuth();
 updateRangeButtons();
+updateTrendButtons();
 setStatus('Log ind kræves', '');
 checkSession().then((ok) => {
   if (ok) {
     loadDashboardNow().then(() => startAutoRefresh());
     setInterval(() => fetchMarketHours().catch((error) => console.error(error)), 30_000);
     state.chartHistoryTimer = setInterval(() => fetchChartHistory().catch((error) => console.error(error)), 20_000);
+    state.activityTrendTimer = setInterval(() => fetchOpenHoursTrend().catch((error) => console.error(error)), 60_000);
   }
 });

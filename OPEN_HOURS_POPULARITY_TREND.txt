@@ -1,0 +1,15 @@
+TSN-S v1.2.3 Open-Hours Popularity Trend
+
+This update adds an open-hours activity trend panel to the CEO dashboard.
+
+What changed:
+- New Open-hours trend card in the dashboard.
+- New 7 / 14 / 30 day trend buttons.
+- Backend endpoint: /api/activity-trend?days=7
+- Trend only counts snapshots captured during TSN-S open hours.
+- Closed-hour snapshots are ignored.
+- The dashboard compares the latest open day against previous open days and labels popularity as rising, falling, or stable.
+- CEO report export now includes openHoursActivityTrend.
+
+No new environment variables are required.
+Keep TSN_STOCK_ALLOWED_USERNAME=ceo.

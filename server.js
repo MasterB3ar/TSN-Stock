@@ -1625,6 +1625,128 @@ function summarizeHistory(history = []) {
   };
 }
 
+
+function openHoursActivityTrend(history = [], options = {}) {
+  const days = clamp(Number(options.days || 7), 2, 30);
+  const clean = cleanHistory(history, { limit: 0 });
+  const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+  const groups = new Map();
+
+  for (const point of clean) {
+    const createdMs = new Date(point.createdAt || 0).getTime();
+    if (!Number.isFinite(createdMs) || createdMs < cutoff) continue;
+    const date = new Date(createdMs);
+    const market = getMarketStatus(date);
+    if (!market.open) continue;
+
+    const metrics = point.metrics || {};
+    const key = market.localDate || new Date(createdMs).toISOString().slice(0, 10);
+    if (!groups.has(key)) {
+      groups.set(key, {
+        date: key,
+        samples: 0,
+        firstSampleAt: point.createdAt || null,
+        lastSampleAt: point.createdAt || null,
+        sumActivityScore: 0,
+        sumActivityPoints: 0,
+        sumOnlineUsers: 0,
+        sumMessagesPerHour: 0,
+        sumGlobalChatsPerHour: 0,
+        sumPrivateMessagesPerHour: 0,
+        minPrice: Infinity,
+        maxPrice: 0,
+        firstPrice: null,
+        lastPrice: null
+      });
+    }
+
+    const row = groups.get(key);
+    const globalChats = finiteNumber(metrics.globalChatsPerHour ?? metrics.postsPerHour);
+    const activityScore = finiteNumber(metrics.activityScore);
+    const activityPoints = finiteNumber(metrics.activityPoints, activityScore * ACTIVITY_SCORE_POINTS_MULTIPLIER);
+    const price = finiteNumber(point.price);
+
+    row.samples += 1;
+    row.lastSampleAt = point.createdAt || row.lastSampleAt;
+    row.sumActivityScore += activityScore;
+    row.sumActivityPoints += activityPoints;
+    row.sumOnlineUsers += finiteNumber(metrics.onlineUsers);
+    row.sumMessagesPerHour += finiteNumber(metrics.messagesPerHour);
+    row.sumGlobalChatsPerHour += globalChats;
+    row.sumPrivateMessagesPerHour += finiteNumber(metrics.privateMessagesPerHour);
+    if (price > 0) {
+      row.minPrice = Math.min(row.minPrice, price);
+      row.maxPrice = Math.max(row.maxPrice, price);
+      if (row.firstPrice === null) row.firstPrice = price;
+      row.lastPrice = price;
+    }
+  }
+
+  const daysList = Array.from(groups.values())
+    .sort((a, b) => String(a.date).localeCompare(String(b.date)))
+    .map((row) => {
+      const samples = Math.max(1, row.samples);
+      const priceChange = row.firstPrice !== null && row.lastPrice !== null ? row.lastPrice - row.firstPrice : 0;
+      const priceChangePercent = row.firstPrice ? (priceChange / row.firstPrice) * 100 : 0;
+      return {
+        date: row.date,
+        samples: row.samples,
+        firstSampleAt: row.firstSampleAt,
+        lastSampleAt: row.lastSampleAt,
+        averageActivityScore: Number((row.sumActivityScore / samples).toFixed(3)),
+        averageActivityPoints: Number((row.sumActivityPoints / samples).toFixed(0)),
+        averageOnlineUsers: Number((row.sumOnlineUsers / samples).toFixed(2)),
+        averageMessagesPerHour: Number((row.sumMessagesPerHour / samples).toFixed(2)),
+        averageGlobalChatsPerHour: Number((row.sumGlobalChatsPerHour / samples).toFixed(2)),
+        averagePrivateMessagesPerHour: Number((row.sumPrivateMessagesPerHour / samples).toFixed(2)),
+        minPrice: row.minPrice === Infinity ? 0 : Number(row.minPrice.toFixed(2)),
+        maxPrice: Number(row.maxPrice.toFixed(2)),
+        priceChange: Number(priceChange.toFixed(2)),
+        priceChangePercent: Number(priceChangePercent.toFixed(2))
+      };
+    });
+
+  const latest = daysList[daysList.length - 1] || null;
+  const previousDays = latest ? daysList.slice(0, -1) : [];
+  const previousAverage = previousDays.length
+    ? previousDays.reduce((sum, day) => sum + finiteNumber(day.averageActivityScore), 0) / previousDays.length
+    : 0;
+  const latestAverage = latest ? finiteNumber(latest.averageActivityScore) : 0;
+  const change = latest && previousDays.length ? latestAverage - previousAverage : 0;
+  const changePercent = previousAverage ? (change / previousAverage) * 100 : 0;
+  const direction = !latest || !previousDays.length || Math.abs(changePercent) < 3
+    ? 'flat'
+    : changePercent > 0 ? 'up' : 'down';
+
+  const headline = !latest
+    ? 'Not enough open-hours history yet.'
+    : !previousDays.length
+      ? `Today’s open-hours average activity is ${latestAverage.toFixed(3)}. More past-day data is needed for a trend.`
+      : direction === 'up'
+        ? `TSN looks more popular during open hours: activity is up ${changePercent.toFixed(1)}% versus recent open-day averages.`
+        : direction === 'down'
+          ? `TSN looks less popular during open hours: activity is down ${Math.abs(changePercent).toFixed(1)}% versus recent open-day averages.`
+          : `TSN popularity is mostly stable during open hours: activity changed ${changePercent >= 0 ? '+' : ''}${changePercent.toFixed(1)}%.`;
+
+  return {
+    ok: true,
+    timezone: MARKET_TIMEZONE,
+    generatedAt: new Date().toISOString(),
+    daysRequested: days,
+    openWindows: MARKET_WINDOWS.map((window) => ({ ...window })),
+    market: getMarketStatus(),
+    latestDay: latest,
+    previousOpenDaysAverage: previousDays.length ? Number(previousAverage.toFixed(3)) : 0,
+    latestVsPrevious: {
+      change: Number(change.toFixed(3)),
+      changePercent: Number(changePercent.toFixed(2)),
+      direction
+    },
+    headline,
+    days: daysList.slice(-days)
+  };
+}
+
 function makePriceExplanation(stock = {}, history = []) {
   const metrics = stock.metrics || {};
   const deltas = metrics.metricDeltas || {};
@@ -1752,6 +1874,7 @@ function buildReportPayload(stockPayload, history, range = 'today') {
       rawGlobalChatsPerHour: finiteNumber(metrics.rawGlobalChatsPerHour ?? metrics.rawPostsPerHour)
     },
     historySummary: summary,
+    openHoursActivityTrend: openHoursActivityTrend(history, { days: range === '30d' ? 30 : range === '7d' ? 7 : 7 }),
     explanation,
     alerts,
     history: cleanHistory(history, { limit: HISTORY_API_MAX_POINTS }).map((point) => ({
@@ -1920,6 +2043,20 @@ const server = http.createServer((req, res) => {
   }
 
 
+  if (urlPath === '/api/activity-trend') {
+    if (req.method !== 'GET') return sendJson(res, 405, { ok: false, error: 'Use GET for activity trend.' });
+    const days = clamp(Number(url.searchParams.get('days') || 7), 2, 30);
+    const sinceMs = days * 24 * 60 * 60 * 1000;
+    const estimatedRangePoints = Math.ceil(sinceMs / Math.max(1000, REFRESH_INTERVAL_MS)) + 240;
+    const queryLimit = Math.min(Math.max(estimatedRangePoints, HISTORY_API_MAX_POINTS), MAX_HISTORY_POINTS);
+    getTsnSession(req)
+      .then(() => loadHistory({ sinceMs, limit: queryLimit }).catch(() => cleanHistory(memoryHistory)))
+      .then((history) => sendJson(res, 200, openHoursActivityTrend(history, { days })))
+      .catch((error) => sendJson(res, error.statusCode || 500, { ok: false, error: error.message, accessDenied: Boolean(error.accessDenied) }));
+    return;
+  }
+
+
   if (urlPath === '/api/report') {
     if (req.method !== 'GET') return sendJson(res, 405, { ok: false, error: 'Use GET for report export.' });
     const range = url.searchParams.get('range') || 'today';
@@ -1973,6 +2110,7 @@ const server = http.createServer((req, res) => {
         walletEnabled: false,
         tradingEnabled: false,
         reportEnabled: true,
+        activityTrendEnabled: true,
         historyApiMaxPoints: HISTORY_API_MAX_POINTS,
         storedHistoryPoints: MAX_HISTORY_POINTS,
         stockPayloadHistoryPoints: STOCK_PAYLOAD_HISTORY_POINTS,

@@ -111,6 +111,57 @@
         <div class="metric card"><strong id="todayChange">0,00</strong><span>Ændring i valgte graf</span></div>
       </section>
 
+
+      <section class="card open-hours-card">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Open-hours trend</p>
+            <h2>Er TSN mere eller mindre populær?</h2>
+            <p class="small">Sammenligner kun gennemsnitlig aktivitet i TSN-S åbningstider, så lukkede perioder ikke tæller med.</p>
+          </div>
+          <div class="trend-actions">
+            <button type="button" data-trend-days="7" class="range-button active">7 dage</button>
+            <button type="button" data-trend-days="14" class="range-button">14 dage</button>
+            <button type="button" data-trend-days="30" class="range-button">30 dage</button>
+          </div>
+        </div>
+        <div class="trend-summary-grid">
+          <div class="trend-summary-card">
+            <span>Seneste åbningsdag</span>
+            <strong id="trendLatestActivity">--</strong>
+            <small>gennemsnitlig aktivitet</small>
+          </div>
+          <div class="trend-summary-card">
+            <span>Tidligere åbne dage</span>
+            <strong id="trendPreviousActivity">--</strong>
+            <small>gennemsnitlig aktivitet</small>
+          </div>
+          <div class="trend-summary-card">
+            <span>Popularitet</span>
+            <strong id="trendDirection">--</strong>
+            <small id="trendPercent">venter på data</small>
+          </div>
+        </div>
+        <p id="openHoursTrendHeadline" class="reason-headline">Venter på åbningshistorik...</p>
+        <div class="trend-table-wrap">
+          <table class="trend-table">
+            <thead>
+              <tr>
+                <th>Dag</th>
+                <th>Aktivitet</th>
+                <th>Online</th>
+                <th>Beskeder/t</th>
+                <th>Global chats/t</th>
+                <th>Samples</th>
+              </tr>
+            </thead>
+            <tbody id="openHoursTrendRows">
+              <tr><td colspan="6">Ingen trenddata endnu.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
       <section class="insight-layout">
         <article class="card insight-card">
           <div class="section-head">

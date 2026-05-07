@@ -1,7 +1,7 @@
 {
   "name": "tsn-stock-standalone",
-  "version": "1.2.2",
-  "description": "Restricted read-only TSN-S CEO analytics dashboard with login, price graphs, explanation panels, alerts, and exportable reports.",
+  "version": "1.2.3",
+  "description": "Restricted read-only TSN-S CEO analytics dashboard with open-hours popularity trend analysis.",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
