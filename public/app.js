@@ -654,6 +654,16 @@ function makeClientAlerts(stock) {
   if (stock?.source === 'last-known') alerts.push({ type: 'danger', title: 'Normal TSN svarer ikke', message: 'Dashboardet viser seneste gemte datapunkt.' });
   if (ageSeconds !== null && ageSeconds > 180) alerts.push({ type: 'warning', title: 'Gammel data', message: `Seneste datapunkt er cirka ${ageSeconds}s gammelt.` });
   if (!persistence.enabled) alerts.push({ type: 'warning', title: 'Historik er midlertidig', message: 'MongoDB persistence er ikke aktiv.' });
+  const background = stock?.backgroundUpdater || config.backgroundUpdater || {};
+  if (background.enabled === false || config.backgroundUpdaterEnabled === false) {
+    alerts.push({ type: 'warning', title: 'Baggrundsopdatering er slået fra', message: 'TSN-S gemmer kun nye datapunkter, når dashboardet/cron rammer serveren.' });
+  } else if (background.lastError) {
+    alerts.push({ type: 'warning', title: 'Baggrundsopdatering fejlede', message: String(background.lastError).slice(0, 160) });
+  } else if (background.lastSuccessAt) {
+    const lastBgMs = new Date(background.lastSuccessAt).getTime();
+    const lastBgAge = Number.isFinite(lastBgMs) ? Math.round((Date.now() - lastBgMs) / 1000) : null;
+    if (lastBgAge !== null && lastBgAge > 180) alerts.push({ type: 'warning', title: 'Baggrundsdata er gammel', message: `Seneste server-baggrundsupdate var cirka ${lastBgAge}s siden.` });
+  }
   if (market.state === 'closed') alerts.push({ type: 'info', title: 'Marked lukket', message: market.message || 'TSN-S er lukket lige nu.' });
   if (antiSpam.enabled && antiSpam.spamDetected) alerts.push({ type: antiSpam.singleUserSpamSuppressed ? 'warning' : 'info', title: 'Spamfilter aktivt', message: `${Number(antiSpam.spamIgnored || 0).toFixed(0)} events blev ignoreret.` });
   if (!alerts.length) alerts.push({ type: 'success', title: 'Alt ser normalt ud', message: 'TSN-kilde, graf og dashboard-data svarer.' });
@@ -798,7 +808,11 @@ function renderStock(stock) {
     ? ` Spamfilter: ${formatNumber(antiSpam.effectiveMessagesPerHour ?? metrics.messagesPerHour ?? 0, 0)}/${formatNumber(antiSpam.rawMessagesPerHour ?? metrics.messagesPerHour ?? 0, 0)} beskeder og ${formatNumber(antiSpam.effectivePostsPerHour ?? metrics.globalChatsPerHour ?? metrics.postsPerHour ?? 0, 0)}/${formatNumber(antiSpam.rawPostsPerHour ?? metrics.rawGlobalChatsPerHour ?? metrics.postsPerHour ?? 0, 0)} global chats tæller.${antiSpam.singleUserSpamSuppressed ? ' Enkeltbruger-spam er ignoreret.' : ''}`
     : '';
   $('#stockDisclaimer').textContent = `${stock.disclaimer || 'Fiktiv TSN-aktivitetspris. Ikke en rigtig aktie.'}${spamSuffix}`;
-  $('#refreshInfo').textContent = `Tjekker for ændringer hvert ${Math.max(1, Math.round(REFRESH_INTERVAL_MS / 1000))}. sekund og opdaterer ved selv små ændringer`;
+  const background = stock.backgroundUpdater || config.backgroundUpdater || {};
+  const bgText = background.enabled === false
+    ? 'Server-baggrundsopdatering er slået fra'
+    : `Serveren gemmer nye datapunkter ca. hvert ${Math.max(1, Math.round((background.intervalMs || config.backgroundUpdateIntervalMs || 60000) / 1000))}. sekund${background.lastSuccessAt ? ` · senest ${formatTime(background.lastSuccessAt)}` : ''}`;
+  $('#refreshInfo').textContent = `Dashboardet tjekker hvert ${Math.max(1, Math.round(REFRESH_INTERVAL_MS / 1000))}. sekund. ${bgText}.`;
   const persistenceInfo = $('#persistenceInfo');
   if (persistenceInfo) {
     const persistence = stock.persistence || {};

@@ -36,3 +36,16 @@ Important:
 - Wrong: https://your-tsn-s.onrender.com
 - Wrong: https://your-normal-tsn.onrender.com/api
 - Wallet and trading environment variables are no longer used.
+
+TSN-S v1.2.4 always-on update env vars:
+TSN_STOCK_BACKGROUND_UPDATER=true
+TSN_STOCK_BACKGROUND_UPDATE_MS=60000
+TSN_STOCK_BACKGROUND_UPDATE_WHEN_CLOSED=true
+TSN_STOCK_BACKGROUND_STARTUP_REFRESH=true
+TSN_STOCK_CRON_SECRET=make-this-a-long-random-secret
+TSN_STOCK_CRON_MIN_INTERVAL_MS=30000
+
+For Render Free, add an external cron/uptime service that pings:
+https://your-tsn-s.onrender.com/api/cron/tick?secret=YOUR_SECRET
+
+Use every 1-5 minutes. Without a cron ping, Render Free can sleep and background timers stop.

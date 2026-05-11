@@ -26,3 +26,10 @@ Before uploading to GitHub:
 
 5. Deploy with:
    Manual Deploy -> Clear build cache & deploy
+
+v1.2.4 always-on update verification:
+1. Deploy TSN-S.
+2. Open /healthz and check backgroundUpdater.enabled is true.
+3. Open /api/cron/tick?secret=YOUR_SECRET and check ok=true.
+4. Log in as ceo and check the alerts panel does not show stale background data.
+5. Add a cron/uptime ping if using Render Free.

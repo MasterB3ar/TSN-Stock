@@ -76,6 +76,12 @@ const MAX_HISTORY_POINTS = Number(process.env.TSN_STOCK_MAX_HISTORY || 302400); 
 const STOCK_PAYLOAD_HISTORY_POINTS = Number(process.env.TSN_STOCK_PAYLOAD_HISTORY_POINTS || 720);
 const HISTORY_API_MAX_POINTS = Number(process.env.TSN_STOCK_HISTORY_API_MAX_POINTS || 1400);
 const REFRESH_INTERVAL_MS = Number(process.env.TSN_STOCK_REFRESH_MS || 2000);
+const BACKGROUND_UPDATER_ENABLED = String(process.env.TSN_STOCK_BACKGROUND_UPDATER || 'true').toLowerCase() !== 'false';
+const BACKGROUND_UPDATE_INTERVAL_MS = Math.max(10_000, Number(process.env.TSN_STOCK_BACKGROUND_UPDATE_MS || 60_000));
+const BACKGROUND_UPDATE_WHEN_CLOSED = String(process.env.TSN_STOCK_BACKGROUND_UPDATE_WHEN_CLOSED || 'true').toLowerCase() !== 'false';
+const BACKGROUND_STARTUP_REFRESH = String(process.env.TSN_STOCK_BACKGROUND_STARTUP_REFRESH || 'true').toLowerCase() !== 'false';
+const CRON_TICK_SECRET = String(process.env.TSN_STOCK_CRON_SECRET || '').trim();
+const CRON_TICK_MIN_INTERVAL_MS = Math.max(10_000, Number(process.env.TSN_STOCK_CRON_MIN_INTERVAL_MS || 30_000));
 const RESET_KEY = String(process.env.TSN_STOCK_RESET_KEY || '');
 const RESET_BASE_PRICE = Number(process.env.TSN_STOCK_RESET_PRICE || 100);
 const TARGET_BASE_PRICE = Number(process.env.TSN_STOCK_TARGET_BASE_PRICE || RESET_BASE_PRICE || 100);
@@ -104,6 +110,29 @@ let originalTsnMongoClient = null;
 let cachedPayload = null;
 let cachedAt = 0;
 let memoryHistory = [];
+let backgroundTimer = null;
+let backgroundTickInProgress = false;
+let lastCronTickAt = 0;
+const backgroundStatus = {
+  enabled: BACKGROUND_UPDATER_ENABLED,
+  intervalMs: BACKGROUND_UPDATE_INTERVAL_MS,
+  updateWhenClosed: BACKGROUND_UPDATE_WHEN_CLOSED,
+  startupRefresh: BACKGROUND_STARTUP_REFRESH,
+  cronEndpoint: '/api/cron/tick',
+  cronSecretConfigured: Boolean(CRON_TICK_SECRET),
+  running: false,
+  lastTrigger: null,
+  lastStartedAt: null,
+  lastFinishedAt: null,
+  lastSuccessAt: null,
+  lastErrorAt: null,
+  lastError: null,
+  totalRuns: 0,
+  totalSuccess: 0,
+  totalErrors: 0,
+  lastPrice: null,
+  lastSource: null
+};
 
 const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -1518,7 +1547,8 @@ function buildPayload(stock, history, persistence, source = 'live') {
         collection: PERSISTENCE_ENABLED ? COLLECTION : null
       },
       source,
-      market: getMarketStatus()
+      market: getMarketStatus(),
+      backgroundUpdater: getBackgroundUpdaterStatus()
     }
   };
 }
@@ -1578,6 +1608,112 @@ async function getStockPayload({ force = false } = {}) {
       return cachedPayload;
     }
     throw error;
+  }
+}
+
+
+function getBackgroundUpdaterStatus() {
+  return {
+    ...backgroundStatus,
+    running: backgroundTickInProgress,
+    lastCronTickAt: lastCronTickAt ? new Date(lastCronTickAt).toISOString() : null
+  };
+}
+
+function cronSecretAllowed(req, url) {
+  if (!CRON_TICK_SECRET) return true;
+  const supplied = String(req.headers['x-cron-secret'] || url.searchParams.get('secret') || url.searchParams.get('key') || '').trim();
+  return supplied && supplied === CRON_TICK_SECRET;
+}
+
+async function runBackgroundSnapshot(trigger = 'background') {
+  const market = getMarketStatus();
+  if (!BACKGROUND_UPDATE_WHEN_CLOSED && !market.open && trigger !== 'manual' && trigger !== 'cron') {
+    backgroundStatus.lastTrigger = trigger;
+    backgroundStatus.lastFinishedAt = new Date().toISOString();
+    backgroundStatus.lastError = null;
+    return {
+      ok: true,
+      skipped: true,
+      reason: 'market-closed',
+      market,
+      background: getBackgroundUpdaterStatus()
+    };
+  }
+
+  if (backgroundTickInProgress) {
+    return {
+      ok: true,
+      skipped: true,
+      reason: 'already-running',
+      market,
+      background: getBackgroundUpdaterStatus()
+    };
+  }
+
+  backgroundTickInProgress = true;
+  backgroundStatus.running = true;
+  backgroundStatus.lastTrigger = trigger;
+  backgroundStatus.lastStartedAt = new Date().toISOString();
+  backgroundStatus.totalRuns += 1;
+
+  try {
+    const payload = await getStockPayload({ force: true });
+    const stock = payload?.stock || {};
+    const finishedAt = new Date().toISOString();
+    backgroundStatus.lastFinishedAt = finishedAt;
+    backgroundStatus.lastSuccessAt = finishedAt;
+    backgroundStatus.lastError = null;
+    backgroundStatus.totalSuccess += 1;
+    backgroundStatus.lastPrice = Number(stock.price || 0);
+    backgroundStatus.lastSource = stock.source || null;
+    return {
+      ok: true,
+      skipped: false,
+      trigger,
+      saved: Boolean(stock.persistence?.saved),
+      persistence: stock.persistence || null,
+      price: stock.price,
+      change: stock.change,
+      changePercent: stock.changePercent,
+      source: stock.source,
+      updatedAt: stock.updatedAt,
+      market: stock.market || market,
+      background: getBackgroundUpdaterStatus()
+    };
+  } catch (error) {
+    const finishedAt = new Date().toISOString();
+    backgroundStatus.lastFinishedAt = finishedAt;
+    backgroundStatus.lastErrorAt = finishedAt;
+    backgroundStatus.lastError = error.message || 'Background update failed.';
+    backgroundStatus.totalErrors += 1;
+    throw error;
+  } finally {
+    backgroundTickInProgress = false;
+    backgroundStatus.running = false;
+  }
+}
+
+function startBackgroundUpdater() {
+  if (!BACKGROUND_UPDATER_ENABLED) {
+    console.log('TSN-S background updater is disabled. Set TSN_STOCK_BACKGROUND_UPDATER=true to enable it.');
+    return;
+  }
+  if (backgroundTimer) clearInterval(backgroundTimer);
+  backgroundTimer = setInterval(() => {
+    runBackgroundSnapshot('timer').catch((error) => {
+      console.error('TSN-S background update failed:', error.message);
+    });
+  }, BACKGROUND_UPDATE_INTERVAL_MS);
+  if (typeof backgroundTimer.unref === 'function') backgroundTimer.unref();
+
+  console.log(`TSN-S background updater enabled every ${Math.round(BACKGROUND_UPDATE_INTERVAL_MS / 1000)}s${BACKGROUND_UPDATE_WHEN_CLOSED ? ' including closed hours' : ' during open hours only'}.`);
+  if (BACKGROUND_STARTUP_REFRESH) {
+    setTimeout(() => {
+      runBackgroundSnapshot('startup').catch((error) => {
+        console.error('TSN-S startup background update failed:', error.message);
+      });
+    }, 1500).unref?.();
   }
 }
 
@@ -1910,6 +2046,8 @@ const server = http.createServer((req, res) => {
       marketStatus: getMarketStatus(),
       access: { loginRequired: true, allowedUsername: TSN_STOCK_ALLOWED_USERNAME },
       commerce: { walletEnabled: false, tradingEnabled: false },
+      backgroundUpdater: getBackgroundUpdaterStatus(),
+      cronTick: { endpoint: '/api/cron/tick', secretConfigured: Boolean(CRON_TICK_SECRET), minIntervalMs: CRON_TICK_MIN_INTERVAL_MS },
       tsnApiConfigured: Boolean(TSN_API_BASE_URL),
       tsnApiEnvName: TSN_API_ENV.name || null,
       tsnApiBaseUrl: TSN_API_BASE_URL || null,
@@ -1919,6 +2057,40 @@ const server = http.createServer((req, res) => {
       originalTsnMongoFallbackExplicit: Boolean(EXPLICIT_ORIGINAL_TSN_MONGODB_URI),
       originalTsnDatabase: ORIGINAL_TSN_DATABASE
     });
+  }
+
+
+  if (urlPath === '/api/cron/tick') {
+    if (req.method !== 'GET' && req.method !== 'POST') {
+      return sendJson(res, 405, { ok: false, error: 'Use GET or POST for cron tick.' });
+    }
+    if (!cronSecretAllowed(req, url)) {
+      return sendJson(res, 401, { ok: false, error: 'Cron secret is missing or wrong.' });
+    }
+    const nowMs = Date.now();
+    if (lastCronTickAt && nowMs - lastCronTickAt < CRON_TICK_MIN_INTERVAL_MS) {
+      return sendJson(res, 429, {
+        ok: false,
+        error: `Cron tick is too soon. Wait at least ${Math.ceil((CRON_TICK_MIN_INTERVAL_MS - (nowMs - lastCronTickAt)) / 1000)}s.`,
+        background: getBackgroundUpdaterStatus()
+      });
+    }
+    lastCronTickAt = nowMs;
+    runBackgroundSnapshot('cron')
+      .then((result) => sendJson(res, 200, {
+        ...result,
+        cron: {
+          ok: true,
+          secretConfigured: Boolean(CRON_TICK_SECRET),
+          note: CRON_TICK_SECRET ? 'Cron tick accepted with secret protection.' : 'Cron tick accepted. For public deployments, set TSN_STOCK_CRON_SECRET.'
+        }
+      }))
+      .catch((error) => sendJson(res, error.statusCode || 500, {
+        ok: false,
+        error: error.message,
+        background: getBackgroundUpdaterStatus()
+      }));
+    return;
   }
 
 
@@ -2111,6 +2283,10 @@ const server = http.createServer((req, res) => {
         tradingEnabled: false,
         reportEnabled: true,
         activityTrendEnabled: true,
+        backgroundUpdater: getBackgroundUpdaterStatus(),
+        backgroundUpdaterEnabled: BACKGROUND_UPDATER_ENABLED,
+        backgroundUpdateIntervalMs: BACKGROUND_UPDATE_INTERVAL_MS,
+        cronTickEndpoint: '/api/cron/tick',
         historyApiMaxPoints: HISTORY_API_MAX_POINTS,
         storedHistoryPoints: MAX_HISTORY_POINTS,
         stockPayloadHistoryPoints: STOCK_PAYLOAD_HISTORY_POINTS,
@@ -2148,6 +2324,7 @@ server.listen(PORT, () => {
   } else {
     console.log(`Original TSN API: ${TSN_API_BASE_URL} (${TSN_API_ENV.name || 'env'})`);
   }
+  startBackgroundUpdater();
   if (!PERSISTENCE_ENABLED) {
     console.warn('MongoDB persistence is not configured. Set MONGODB_URI, plus optional MONGODB_DATABASE and MONGODB_COLLECTION.');
   }

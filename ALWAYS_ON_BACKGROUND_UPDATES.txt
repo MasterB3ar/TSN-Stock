@@ -1,0 +1,25 @@
+TSN-S v1.2.4 — Always-On Background Updates
+
+This update makes TSN-S collect and save price/activity snapshots from the backend, not only when the CEO dashboard is open.
+
+What changed:
+- Added a server-side background updater.
+- Default update interval: 60 seconds.
+- Updates continue during closed hours by default, so long-term history stays complete.
+- Added /api/cron/tick for external cron/uptime pings.
+- Added background updater status to /healthz, /config.js, and /api/stock responses.
+- Dashboard alerts now warn if background updates fail or become stale.
+
+New optional env vars:
+TSN_STOCK_BACKGROUND_UPDATER=true
+TSN_STOCK_BACKGROUND_UPDATE_MS=60000
+TSN_STOCK_BACKGROUND_UPDATE_WHEN_CLOSED=true
+TSN_STOCK_BACKGROUND_STARTUP_REFRESH=true
+TSN_STOCK_CRON_SECRET=make-this-a-long-random-secret
+TSN_STOCK_CRON_MIN_INTERVAL_MS=30000
+
+Render Free note:
+Render Free services can sleep. When Render sleeps, JavaScript timers stop. Use an external cron/uptime service to ping:
+https://your-tsn-s.onrender.com/api/cron/tick?secret=YOUR_SECRET
+
+Recommended cron interval: every 1-5 minutes.

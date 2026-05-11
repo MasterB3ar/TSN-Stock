@@ -48,3 +48,14 @@ services:
         value: "2"
       - key: TSN_STOCK_MAX_HISTORY
         value: "302400"
+      - key: TSN_STOCK_BACKGROUND_UPDATER
+        value: "true"
+      - key: TSN_STOCK_BACKGROUND_UPDATE_MS
+        value: "60000"
+      - key: TSN_STOCK_BACKGROUND_UPDATE_WHEN_CLOSED
+        value: "true"
+      - key: TSN_STOCK_BACKGROUND_STARTUP_REFRESH
+        value: "true"
+      # Optional: set this to protect /api/cron/tick if you use an external cron service.
+      # - key: TSN_STOCK_CRON_SECRET
+      #   value: change-me-long-secret

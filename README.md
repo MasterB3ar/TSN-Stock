@@ -124,3 +124,36 @@ Added in this version:
 - Exported CEO reports now include `openHoursActivityTrend`.
 
 No new environment variables are required.
+
+## v1.2.4 Always-On Background Updates
+
+Added in this version:
+
+- TSN-S now has a server-side background updater.
+- The server saves new TSN-S price/activity snapshots on a timer even when the CEO dashboard is closed.
+- New health/debug data shows whether the background updater is running.
+- New public cron endpoint: `/api/cron/tick`.
+- `/api/cron/tick` can be used by cron-job.org, UptimeRobot, or another uptime pinger to keep TSN-S collecting data when nobody is viewing the page.
+
+Important limitation:
+
+- On Render Free, the web service can still sleep. A sleeping service cannot run timers. To make updates continue while nobody is on TSN-S, add an external cron/uptime ping to hit `/api/cron/tick` every 1-5 minutes.
+
+New optional environment variables:
+
+```env
+TSN_STOCK_BACKGROUND_UPDATER=true
+TSN_STOCK_BACKGROUND_UPDATE_MS=60000
+TSN_STOCK_BACKGROUND_UPDATE_WHEN_CLOSED=true
+TSN_STOCK_BACKGROUND_STARTUP_REFRESH=true
+TSN_STOCK_CRON_SECRET=make-this-a-long-random-secret
+TSN_STOCK_CRON_MIN_INTERVAL_MS=30000
+```
+
+Cron URL example:
+
+```txt
+https://your-tsn-s.onrender.com/api/cron/tick?secret=YOUR_SECRET
+```
+
+If you do not set `TSN_STOCK_CRON_SECRET`, the endpoint still works, but setting a secret is recommended.
